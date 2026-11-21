@@ -309,15 +309,34 @@
       const open = ts.filter(T.isOpen);
       return { u, open: open.length, od: open.filter(t => T.isOverdue(t)).length, crit: open.filter(t => t.priority === 'critical').length, today: open.filter(T.dueToday).length, review: ts.filter(t => t.status === 'pending_review').length, k: T.computeKpi(u.id, range.from, range.to) };
     });
-    $('#view').innerHTML = `<div class="page-head"><div><h1>Team management &amp; workload</h1><div class="sub">Check capacity before assigning · manage leave and backups</div></div></div>
-      <div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Department</th><th>Manager</th><th>Active</th><th>Overdue</th><th>Critical</th><th>Due today</th><th>In review</th><th>KPI (${range.label})</th><th>Leave / backup</th><th></th></tr></thead><tbody>
+    const admin = me.role === 'super_admin';
+    const depts = T.visibleDepts(me).map(d => ({
+      d, managers: D().users.filter(u => u.active && u.role === 'manager' && (u.teams || []).includes(d.id)),
+      members: D().users.filter(u => u.active && u.role === 'employee' && u.deptId === d.id).length,
+      open: D().tasks.filter(t => t.deptId === d.id && T.isOpen(t) && !t.archived).length
+    }));
+    $('#view').innerHTML = `<div class="page-head"><div><h1>Team management &amp; workload</h1><div class="sub">Check capacity before assigning · manage leave and backups${admin ? ' · add team members and departments' : ''}</div></div>
+      ${admin ? `<div class="actions"><button class="btn primary" id="tm-add-user">＋ Add team member</button><button class="btn" id="tm-add-dept">＋ Add department</button></div>` : ''}</div>
+      <div class="card" style="padding:0;margin-bottom:16px"><div class="card-head" style="padding:14px 16px 0"><h2>Departments</h2><span class="small muted">${depts.length} department(s)</span></div><div class="table-wrap"><table><thead><tr><th>Department</th><th>Managed by</th><th>Team members</th><th>Open tasks</th>${admin ? '<th></th>' : ''}</tr></thead><tbody>
+      ${depts.map(x => `<tr><td><span class="who"><i style="width:10px;height:10px;border-radius:3px;display:inline-block;background:${esc(x.d.color || 'var(--primary)')}"></i><b>${esc(x.d.name)}</b></span></td>
+        <td class="small">${x.managers.map(m => esc(m.name)).join(', ') || '<span class="muted">No manager yet</span>'}</td>
+        <td>${x.members}</td><td><a href="${T.drill({ dept: x.d.id, preset: 'pending' })}">${x.open}</a></td>
+        ${admin ? `<td class="nowrap"><button class="btn sm" data-add-member="${x.d.id}">＋ Add member</button> <button class="btn sm" data-rename="${x.d.id}">Rename</button></td>` : ''}</tr>`).join('')}
+      </tbody></table></div></div>
+      <div class="card" style="padding:0"><div class="card-head" style="padding:14px 16px 0"><h2>Team members &amp; workload</h2><span class="small muted">${rows.length} employee(s)</span></div><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Department</th><th>Manager</th><th>Active</th><th>Overdue</th><th>Critical</th><th>Due today</th><th>In review</th><th>KPI (${range.label})</th><th>Leave / backup</th><th></th></tr></thead><tbody>
       ${rows.map(r => `<tr><td>${U.avatar(r.u.id)}</td><td class="small">${esc(T.deptName(r.u.deptId))}</td><td class="small">${esc(T.userName(r.u.managerId))}</td>
         <td><a href="${T.drill({ owner: r.u.id, preset: 'pending' })}"><b>${r.open}</b></a></td><td><a href="${T.drill({ owner: r.u.id, status: 'overdue' })}" style="color:var(--danger)"><b>${r.od}</b></a></td><td>${r.crit}</td><td>${r.today}</td><td>${r.review}</td>
         <td class="${r.k.band.cls}"><b>${r.k.score == null ? '—' : r.k.score.toFixed(0) + '%'}</b></td>
         <td class="small">${r.u.onLeave ? `🏖 On leave → ${esc(T.userName(r.u.backupId))}` : '<span class="muted">Available</span>'}</td>
         <td class="nowrap"><button class="btn sm" data-assign="${r.u.id}">＋ Assign</button> <button class="btn sm" data-leave="${r.u.id}">${r.u.onLeave ? 'End leave' : 'Leave'}</button></td></tr>`).join('')}
-      </tbody></table></div></div>`;
+      </tbody></table></div>${rows.length ? '' : `<div class="empty">No team members yet.${admin ? ' Click “＋ Add team member” to add the first one.' : ''}</div>`}</div>`;
     const v = $('#view');
+    if (admin) {
+      $('#tm-add-user').onclick = () => editUser(me, null);
+      $('#tm-add-dept').onclick = () => deptModal(me, null);
+      $$('[data-add-member]', v).forEach(b => b.onclick = () => editUser(me, null, b.dataset.addMember));
+      $$('[data-rename]', v).forEach(b => b.onclick = () => deptModal(me, b.dataset.rename));
+    }
     $$('[data-assign]', v).forEach(b => b.onclick = () => U.openCreate({ ownerId: b.dataset.assign, deptId: T.user(b.dataset.assign).deptId }));
     $$('[data-leave]', v).forEach(b => b.onclick = () => {
       const u = T.user(b.dataset.leave);
@@ -460,7 +479,7 @@
     const body = {
       users: `<div class="card" style="padding:0"><table><thead><tr><th>Name</th><th>Role</th><th>Department</th><th>Reports to</th><th>Email</th><th>Status</th><th></th></tr></thead><tbody>
         ${D().users.map(u => `<tr><td>${U.avatar(u.id)}</td><td>${T.ROLES[u.role]}</td><td class="small">${u.role === 'manager' ? (u.teams || []).map(T.deptName).join(', ') : esc(T.deptName(u.deptId))}</td><td class="small">${esc(u.managerId ? T.userName(u.managerId) : '—')}</td><td class="small">${esc(u.email)}</td><td>${u.active ? '<span class="pill s-completed">Active</span>' : '<span class="pill s-cancelled">Inactive</span>'}</td><td><button class="btn sm" data-edit="${u.id}">Edit</button></td></tr>`).join('')}
-        </tbody></table></div><div style="margin-top:10px;display:flex;gap:8px"><button class="btn primary" data-edit="">＋ Add user</button><input class="input" id="nd-name" placeholder="New department name" style="max-width:240px"><button class="btn" id="nd-add">＋ Add department</button></div>`,
+        </tbody></table></div><div style="margin-top:10px;display:flex;gap:8px"><button class="btn primary" data-edit="">＋ Add team member</button><button class="btn" id="nd-add">＋ Add department</button></div>`,
       kpi: `<div class="card" style="max-width:640px"><h2>KPI weightage</h2><p class="small muted">Must total 100%. Changes apply to all KPI calculations immediately and are audited.</p>
         ${T.KPI_PARAMS.map(p => `<div class="slider-row"><span>${p.label}</span><input type="number" class="input" min="0" max="100" data-w="${p.key}" value="${s.kpiWeights[p.key]}"><span>%</span></div>`).join('')}
         <div id="w-total" class="small"></div>
@@ -499,7 +518,7 @@
     $$('[data-tab]', v).forEach(b => b.onclick = () => T.app.go('admin', { tab: b.dataset.tab }));
     if (tab === 'users') {
       $$('[data-edit]', v).forEach(b => b.onclick = () => editUser(me, b.dataset.edit));
-      $('#nd-add').onclick = () => U.act(() => T.api.saveDept(me, $('#nd-name').value), 'Department added');
+      $('#nd-add').onclick = () => deptModal(me, null);
     }
     if (tab === 'kpi') {
       const tot = () => { const t = $$('[data-w]', v).reduce((a, i) => a + (+i.value || 0), 0); $('#w-total').innerHTML = `Total: <b style="color:${t === 100 ? 'var(--ok)' : 'var(--danger)'}">${t}%</b>`; return t; };
@@ -535,23 +554,47 @@
       $('#dt-reset').onclick = () => { if (confirm('Reset all data to a fresh demonstration dataset?')) { T.store.reset(); T.engine.run(); U.toast('Demo data reset'); T.app.refresh(); } };
     }
   };
-  function editUser(me, id) {
-    const u = id ? T.user(id) : { name: '', role: 'employee', deptId: 'd1', managerId: '', email: '', teams: [] };
-    const depts = D().departments, mgrs = D().users.filter(x => x.role !== 'employee' && x.id !== id);
-    U.modal(id ? 'Edit user' : 'Add user', `<label class="field"><span>Full name *</span><input class="input" id="eu-n" value="${esc(u.name)}"></label>
-      <label class="field"><span>Email</span><input class="input" id="eu-e" type="email" value="${esc(u.email)}"></label>
+  /* Add or rename a department (Super Admin). */
+  function deptModal(me, id) {
+    const dept = id ? T.dept(id) : null;
+    const mgrs = D().users.filter(u => u.active && u.role === 'manager');
+    U.modal(dept ? 'Rename department' : 'Add department', `<label class="field"><span>Department name *</span><input class="input" id="dm-n" maxlength="80" placeholder="e.g. Taxation, Payroll, Internal Audit" value="${esc(dept ? dept.name : '')}"></label>
+      ${dept ? '' : `<label class="field"><span>Managed by (reporting manager)</span><select class="input" id="dm-m"><option value="">— assign later —</option>${mgrs.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>
+      <p class="small muted">The manager can then assign and review this department’s tasks. You can also give a manager more departments when editing them.</p>`}`,
+      `<button class="btn" data-close>Cancel</button><button class="btn primary" id="dm-ok">${dept ? 'Save' : 'Add department'}</button>`, m => {
+        $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+        $('#dm-ok').onclick = () => {
+          const name = $('#dm-n').value;
+          U.act(() => dept ? T.api.renameDept(me, id, name) : T.api.saveDept(me, name, $('#dm-m').value || null), dept ? 'Department renamed' : `Department “${name.trim()}” added`)
+            .then(ok => { if (ok) U.closeLayer(); });
+        };
+      });
+  }
+
+  function editUser(me, id, presetDept) {
+    const depts = D().departments;
+    const deptMgr = d => (D().users.find(x => x.active && x.role === 'manager' && (x.teams || []).includes(d)) || {}).id || '';
+    const startDept = presetDept || (depts[0] && depts[0].id) || null;
+    const u = id ? T.user(id) : { name: '', role: 'employee', deptId: startDept, managerId: deptMgr(startDept), email: '', teams: [] };
+    const mgrs = D().users.filter(x => x.role !== 'employee' && x.id !== id && x.active);
+    U.modal(id ? 'Edit team member' : 'Add team member', `<label class="field"><span>Full name *</span><input class="input" id="eu-n" value="${esc(u.name)}"></label>
+      <label class="field"><span>Work email${T.isServer() ? ' *' : ''}</span><input class="input" id="eu-e" type="email" value="${esc(u.email)}" placeholder="name@company.com"></label>
       <div class="grid2"><label class="field"><span>Role</span><select class="input" id="eu-r">${Object.entries(T.ROLES).map(([k, l]) => `<option value="${k}" ${u.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="field"><span>Home department</span><select class="input" id="eu-d"><option value="">— none —</option>${depts.map(d => `<option value="${d.id}" ${u.deptId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label></div>
       <label class="field"><span>Reports to</span><select class="input" id="eu-m"><option value="">— none —</option>${mgrs.map(m => `<option value="${m.id}" ${u.managerId === m.id ? 'selected' : ''}>${esc(m.name)} (${T.ROLES[m.role]})</option>`).join('')}</select></label>
-      <label class="field"><span>Teams managed (managers only)</span><div style="display:flex;gap:10px;flex-wrap:wrap">${depts.map(d => `<label class="check"><input type="checkbox" data-team="${d.id}" ${(u.teams || []).includes(d.id) ? 'checked' : ''}> ${esc(d.name)}</label>`).join('')}</div></label>
+      <label class="field" id="eu-teams-f"><span>Departments this manager runs</span><div style="display:flex;gap:10px;flex-wrap:wrap">${depts.map(d => `<label class="check"><input type="checkbox" data-team="${d.id}" ${(u.teams || []).includes(d.id) ? 'checked' : ''}> ${esc(d.name)}</label>`).join('')}</div></label>
       ${id ? `<label class="check"><input type="checkbox" id="eu-a" ${u.active ? 'checked' : ''}> Active</label>` : ''}`,
       `<button class="btn" data-close>Cancel</button><button class="btn primary" id="eu-ok">Save</button>`, m => {
         $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+        const syncRole = () => $('#eu-teams-f').classList.toggle('hidden', $('#eu-r').value !== 'manager');
+        $('#eu-r').onchange = syncRole; syncRole();
+        if (!id) $('#eu-d').onchange = () => { const mg = deptMgr($('#eu-d').value); if (mg) $('#eu-m').value = mg; };
         $('#eu-ok').onclick = () => {
           const rec = { id: id || undefined, name: $('#eu-n').value.trim(), email: $('#eu-e').value.trim(), role: $('#eu-r').value, deptId: $('#eu-d').value || null, managerId: $('#eu-m').value || null, teams: $$('[data-team]', m).filter(i => i.checked).map(i => i.dataset.team) };
           if (id) rec.active = $('#eu-a').checked;
           if (!id && T.isServer() && !rec.email) return U.toast('Email is required — the user signs in with it.', true);
-          U.act(() => T.api.saveUser(me, rec), 'User saved').then(ok => { if (ok) { U.closeLayer(); T.app.renderUserSwitch(); } })
+          if (rec.role !== 'manager') rec.teams = [];
+          U.act(() => T.api.saveUser(me, rec), id ? 'Team member updated' : `${rec.name} added to the team`).then(ok => { if (ok) { U.closeLayer(); T.app.renderUserSwitch(); } })
         };
       });
   }

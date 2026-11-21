@@ -88,17 +88,18 @@
       $$('#notifPanel [data-n]').forEach(el => el.onclick = () => { T.api.markRead(me, [el.dataset.n]); $('#notifPanel').classList.add('hidden'); this.renderBell(); if (el.dataset.t) U.openTask(el.dataset.t); });
     },
     renderUserSwitch() {
+      if (!$('#userSwitch')) return; // server edition: no demo user switcher
       const order = ['super_admin', 'dept_head', 'manager', 'employee'];
       $('#userSwitch').innerHTML = order.map(r => `<optgroup label="${T.ROLES[r]}">${D().users.filter(u => u.role === r && u.active).map(u => `<option value="${u.id}" ${u.id === this.meId ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</optgroup>`).join('');
     },
     init() {
       T.store.load();
       let saved = null, theme = null;
-      try { saved = localStorage.getItem('task360.me'); theme = localStorage.getItem('task360.theme'); } catch (_) {}
+      try { saved = localStorage.getItem('task360.me.v2'); theme = localStorage.getItem('task360.theme'); } catch (_) {}
       if (T.isServer()) {
         this.meId = T.config.meId;
         $('.role-switch').outerHTML = `<form method="post" action="/auth/signout" style="display:flex;align-items:center;gap:8px"><span class="small"><b>${esc(this.me().name)}</b><br><span class="muted">${T.ROLES[this.me().role]}</span></span><button class="btn sm" type="submit">Sign out</button></form>`;
-      } else this.meId = saved && T.user(saved) ? saved : 'u2';
+      } else this.meId = saved && T.user(saved) ? saved : (D().users.find(u => u.role === 'super_admin' && u.active) || D().users[0]).id;
       const badge = $('.demo-badge');
       if (!D().demo) badge.remove();
       else if (T.isServer()) badge.title = 'The shared database contains demonstration data';
@@ -106,7 +107,7 @@
       else if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark';
       if (!T.isServer()) this.renderUserSwitch();
 
-      if (!T.isServer()) $('#userSwitch').onchange = e => { this.meId = e.target.value; try { localStorage.setItem('task360.me', this.meId); } catch (_) {} U.closeLayer(); U.toast(`Signed in as ${this.me().name} (${T.ROLES[this.me().role]})`); this.go('dashboard'); this.render(); };
+      if (!T.isServer()) $('#userSwitch').onchange = e => { this.meId = e.target.value; try { localStorage.setItem('task360.me.v2', this.meId); } catch (_) {} U.closeLayer(); U.toast(`Signed in as ${this.me().name} (${T.ROLES[this.me().role]})`); this.go('dashboard'); this.render(); };
       $('#themeBtn').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; try { localStorage.setItem('task360.theme', t); } catch (_) {} };
       $('#collapseBtn').onclick = () => $('#app').classList.toggle('collapsed');
       $('#mobileMenu').onclick = () => $('#app').classList.toggle('mobile-open');

@@ -25,8 +25,7 @@ python3 -m http.server 8080
 ```
 
 Use the **user switcher** in the top bar to sign in as a different role:
-- **Aditi Sharma**: Super Admin (admin settings, KPI weights, rules, holidays)
-- **Rajesh Mehta**: Department Head (whole department)
+- **Tarun Rajput**: Super Admin and head of the department (default). Sees everything, receives second escalations and month-end reports, adds team members and departments (**Team & Workload** page), and changes settings
 - **Priya Nair / Vikram Singh**: Reporting Managers (create, assign, review)
 - **Ananya, Rohit, Sneha, …**: Employees (acknowledge, update progress, submit)
 

@@ -7,7 +7,7 @@ window.T360 = window.T360 || {};
 (function (T) {
   'use strict';
 
-  const STORAGE_KEY = 'task360.v1';
+  const STORAGE_KEY = 'task360.v2';
   const HOUR = 3600e3, DAY = 24 * HOUR;
 
   T.HOUR = HOUR; T.DAY = DAY;
@@ -102,10 +102,9 @@ window.T360 = window.T360 || {};
       { id: 'd5', name: 'MIS & Closing', color: '#db2777' }
     ];
     const users = [
-      { id: 'u1', name: 'Aditi Sharma', role: 'super_admin', deptId: null, managerId: null, email: 'aditi.sharma@example.com' },
-      { id: 'u2', name: 'Rajesh Mehta', role: 'dept_head', deptId: null, managerId: null, email: 'rajesh.mehta@example.com' },
-      { id: 'u3', name: 'Priya Nair', role: 'manager', deptId: 'd1', teams: ['d1', 'd4'], managerId: 'u2', email: 'priya.nair@example.com' },
-      { id: 'u4', name: 'Vikram Singh', role: 'manager', deptId: 'd2', teams: ['d2', 'd3', 'd5'], managerId: 'u2', email: 'vikram.singh@example.com' },
+      { id: 'u1', name: 'Tarun Rajput', role: 'super_admin', deptId: null, managerId: null, email: 'tarun.rajput@example.com' },
+      { id: 'u3', name: 'Priya Nair', role: 'manager', deptId: 'd1', teams: ['d1', 'd4'], managerId: 'u1', email: 'priya.nair@example.com' },
+      { id: 'u4', name: 'Vikram Singh', role: 'manager', deptId: 'd2', teams: ['d2', 'd3', 'd5'], managerId: 'u1', email: 'vikram.singh@example.com' },
       { id: 'u5', name: 'Ananya Gupta', role: 'employee', deptId: 'd1', managerId: 'u3', email: 'ananya.gupta@example.com' },
       { id: 'u6', name: 'Rohit Verma', role: 'employee', deptId: 'd1', managerId: 'u3', email: 'rohit.verma@example.com' },
       { id: 'u7', name: 'Sneha Iyer', role: 'employee', deptId: 'd2', managerId: 'u4', email: 'sneha.iyer@example.com' },

@@ -127,7 +127,12 @@
   }
   T.notify = notify;
   T.mgrOf = uid => { const u = T.user(uid); return u ? u.managerId : null; };
-  T.deptHeads = () => D().users.filter(u => u.role === 'dept_head' && u.active).map(u => u.id);
+  /* Second-level escalations and month-end reports go to department heads; when there is no
+     department head (e.g. the Super Admin heads the department), they go to the Super Admin(s). */
+  T.deptHeads = () => {
+    const heads = D().users.filter(u => u.role === 'dept_head' && u.active).map(u => u.id);
+    return heads.length ? heads : D().users.filter(u => u.role === 'super_admin' && u.active).map(u => u.id);
+  };
   T.myNotifications = uid => D().notifications.filter(n => n.to === uid).sort((a, b) => b.at - a.at);
 
   /* ---------------- task API ---------------- */
@@ -380,13 +385,31 @@
       else { u.id = 'u' + (Math.max(...d.users.map(x => +x.id.slice(1))) + 1); u.active = true; u.onLeave = false; d.users.push(u); audit(actor.id, 'user', null, `User created: ${u.name} (${T.ROLES[u.role]})`); }
       commit(); return u;
     },
-    saveDept(actor, name) {
+    saveDept(actor, name, managerId) {
       if (actor.role !== 'super_admin') deny('Only the Super Admin can manage departments.');
-      need(name && name.trim(), 'Department name is required.');
-      const d = D(); const id = 'd' + (Math.max(...d.departments.map(x => +x.id.slice(1))) + 1);
-      const palette = ['#7c3aed', '#0d9488', '#ea580c', '#2563eb', '#be123c'];
-      d.departments.push({ id, name: name.trim(), color: palette[d.departments.length % palette.length] });
-      audit(actor.id, 'department', null, `Department created: ${name.trim()}`); commit();
+      name = String(name || '').trim();
+      need(name.length >= 2, 'Department name is required.');
+      const d = D();
+      need(!d.departments.some(x => x.name.toLowerCase() === name.toLowerCase()), `A department called “${name}” already exists.`);
+      const mgr = managerId ? T.user(managerId) : null;
+      if (managerId) need(mgr && mgr.active && mgr.role === 'manager', 'Select a reporting manager to run this department.');
+      const id = 'd' + (Math.max(0, ...d.departments.map(x => +x.id.slice(1) || 0)) + 1);
+      const palette = ['#7c3aed', '#0d9488', '#ea580c', '#2563eb', '#be123c', '#65a30d'];
+      const dept = { id, name: name.slice(0, 80), color: palette[d.departments.length % palette.length] };
+      d.departments.push(dept);
+      if (mgr) mgr.teams = [...new Set([...(mgr.teams || []), id])];
+      audit(actor.id, 'department', null, `Department created: ${dept.name}${mgr ? ` (managed by ${mgr.name})` : ''}`); commit();
+      return dept;
+    },
+    renameDept(actor, id, name) {
+      if (actor.role !== 'super_admin') deny('Only the Super Admin can manage departments.');
+      const dept = T.dept(id); need(dept, 'Department not found.');
+      name = String(name || '').trim();
+      need(name.length >= 2, 'Department name is required.');
+      need(!D().departments.some(x => x.id !== id && x.name.toLowerCase() === name.toLowerCase()), `A department called “${name}” already exists.`);
+      const old = dept.name; dept.name = name.slice(0, 80);
+      audit(actor.id, 'department', null, `Department renamed: ${old} → ${dept.name}`); commit();
+      return dept;
     },
     setLeave(actor, userId, onLeave, backupId) {
       const u = T.user(userId);
@@ -566,7 +589,7 @@
       });
 
       // 3. digests and periodic reports
-      const managers = d.users.filter(u => u.active && (u.role === 'manager' || u.role === 'dept_head'));
+      const managers = d.users.filter(u => u.active && (u.role === 'manager' || u.role === 'dept_head' || u.role === 'super_admin'));
       if (workday && hm >= R.digestTime) managers.forEach(m => {
         const vis = T.visibleTasks(m).filter(t => !t.archived);
         const od = vis.filter(t => T.isOverdue(t)).length, today = vis.filter(T.dueToday).length, crit = vis.filter(t => T.isOpen(t) && t.priority === 'critical').length, rev = vis.filter(t => t.status === 'pending_review').length;

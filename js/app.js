@@ -44,13 +44,25 @@
     },
     refresh() { this.render(); },
     render() {
-      const { path, q } = parse(), me = this.me();
+      let { path, q } = parse(); const me = this.me();
+      let openId = null;
+      if (path.startsWith('task/')) { openId = decodeURIComponent(path.slice(5)); path = 'tasks'; }
       const view = T.views[path] || T.views.dashboard;
       const active = document.activeElement, activeF = active && active.dataset && active.dataset.f, caret = active && active.selectionStart;
       try { view(q, me); } catch (e) { console.error(e); $('#view').innerHTML = `<div class="card alert danger">Something went wrong rendering this page: ${esc(e.message)}</div>`; }
       if (activeF) { const el = $(`[data-f="${activeF}"]`); if (el && el.type !== 'date' && el.tagName === 'INPUT') { el.focus(); try { el.setSelectionRange(caret, caret); } catch (_) {} } }
       this.renderNav(path, q); this.renderBell();
       $('#app').classList.remove('mobile-open');
+      if (openId && !$('#layer').innerHTML) U.openTask(openId);
+    },
+    /* Server edition: re-render after fresh data arrived, without disturbing someone who is typing. */
+    applyFresh(force) {
+      const typing = /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '');
+      const modal = $('#layer .modal');
+      if (!force && (typing || modal)) { this.renderBell(); this.renderNav(parse().path, parse().q); return; }
+      const open = U.currentTask && $('#layer .drawer') ? U.currentTask : null;
+      this.render();
+      if (open && !modal) U.openTask(open.id, open.tab);
     },
     renderNav(path, q) {
       const me = this.me();
@@ -83,12 +95,18 @@
       T.store.load();
       let saved = null, theme = null;
       try { saved = localStorage.getItem('task360.me'); theme = localStorage.getItem('task360.theme'); } catch (_) {}
-      this.meId = saved && T.user(saved) ? saved : 'u2';
+      if (T.isServer()) {
+        this.meId = T.config.meId;
+        $('.role-switch').outerHTML = `<form method="post" action="/auth/signout" style="display:flex;align-items:center;gap:8px"><span class="small"><b>${esc(this.me().name)}</b><br><span class="muted">${T.ROLES[this.me().role]}</span></span><button class="btn sm" type="submit">Sign out</button></form>`;
+      } else this.meId = saved && T.user(saved) ? saved : 'u2';
+      const badge = $('.demo-badge');
+      if (!D().demo) badge.remove();
+      else if (T.isServer()) badge.title = 'The shared database contains demonstration data';
       if (theme) document.documentElement.dataset.theme = theme;
       else if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark';
-      this.renderUserSwitch();
+      if (!T.isServer()) this.renderUserSwitch();
 
-      $('#userSwitch').onchange = e => { this.meId = e.target.value; try { localStorage.setItem('task360.me', this.meId); } catch (_) {} U.closeLayer(); U.toast(`Signed in as ${this.me().name} (${T.ROLES[this.me().role]})`); this.go('dashboard'); this.render(); };
+      if (!T.isServer()) $('#userSwitch').onchange = e => { this.meId = e.target.value; try { localStorage.setItem('task360.me', this.meId); } catch (_) {} U.closeLayer(); U.toast(`Signed in as ${this.me().name} (${T.ROLES[this.me().role]})`); this.go('dashboard'); this.render(); };
       $('#themeBtn').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; try { localStorage.setItem('task360.theme', t); } catch (_) {} };
       $('#collapseBtn').onclick = () => $('#app').classList.toggle('collapsed');
       $('#mobileMenu').onclick = () => $('#app').classList.toggle('mobile-open');
@@ -123,10 +141,23 @@
       };
       gs.onkeydown = e => { if (e.key === 'Enter') { sr.classList.add('hidden'); this.go('tasks', { q: gs.value.trim() }); gs.value = ''; } };
 
-      window.addEventListener('hashchange', () => { U.closeLayer(); this.render(); });
+      window.addEventListener('hashchange', () => {
+        U.closeLayer(); this.render();
+        if (T.isServer()) T.remote.refresh().then(changed => { if (changed) this.applyFresh(true); }).catch(() => {});
+      });
+      if (T.isServer()) {
+        this.render();
+        // The follow-up engine runs on the server (scheduled job). Here we only pull fresh data;
+        // the page is re-rendered only when no dialog is open and the user is not typing.
+        setInterval(() => {
+          if (document.hidden) return;
+          T.remote.refresh().then(changed => { if (changed) this.applyFresh(false); }).catch(() => {});
+        }, 30e3);
+        return;
+      }
       T.engine.run();
       this.render();
-      // Follow-up engine heartbeat (production: server cron every 5 minutes)
+      // Follow-up engine heartbeat (the server edition runs this as a scheduled job)
       setInterval(() => { const n = T.engine.run(); if (n) { this.renderBell(); this.renderNav(parse().path, parse().q); } }, 60e3);
       // Keep multiple open tabs in sync
       window.addEventListener('storage', e => { if (e.key === 'task360.v1') { T.store.load(); this.render(); } });

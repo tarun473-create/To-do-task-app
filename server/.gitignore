@@ -1,0 +1,10 @@
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+# generated from ../index.html, ../css and ../js by scripts/sync-client.mjs
+public/app/
+lib/generated/

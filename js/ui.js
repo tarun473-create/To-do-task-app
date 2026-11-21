@@ -17,8 +17,11 @@
   };
   /* Run an API call and surface validation / permission errors. */
   U.act = (fn, okMsg) => {
-    try { const r = fn(); if (okMsg) U.toast(okMsg); T.app.refresh(); return r ?? true; }
-    catch (e) { U.toast(e.message, true); return false; }
+    /* Always returns a Promise: actions are synchronous in the standalone build and
+       go over the network (server-validated) in the server edition. */
+    return Promise.resolve().then(fn)
+      .then(r => { if (okMsg) U.toast(okMsg); T.app.refresh(); return r ?? true; })
+      .catch(e => { U.toast(e.message, true); return false; });
   };
 
   const COLORS = ['#4f46e5', '#0891b2', '#16a34a', '#d97706', '#db2777', '#7c3aed', '#0d9488', '#ea580c', '#2563eb', '#be123c', '#65a30d', '#9333ea', '#0284c7'];
@@ -79,7 +82,7 @@
   };
 
   /* ---------- layers ---------- */
-  U.closeLayer = () => { $('#layer').innerHTML = ''; document.body.style.overflow = ''; };
+  U.closeLayer = () => { $('#layer').innerHTML = ''; document.body.style.overflow = ''; U.currentTask = null; };
   U.modal = (title, body, foot, onMount) => {
     $('#layer').innerHTML = `<div class="overlay" data-close></div><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="modal-head"><h2>${esc(title)}</h2><button class="close-x" data-close aria-label="Close">×</button></div>
@@ -150,14 +153,17 @@
       let pri = 'medium';
       $$('#ct-pri button').forEach(b => b.onclick = () => { $$('#ct-pri button').forEach(x => x.classList.remove('on')); b.classList.add('on'); pri = b.dataset.p; $('#ct-tat').value = T.PRIORITIES.find(p => p.id === pri).tat; });
       $('#ct-go').onclick = () => {
-        const date = $('#ct-date').value, time = $('#ct-time').value;
-        const t = U.act(() => T.api.createTask(me, {
+        const date = $('#ct-date').value, time = $('#ct-time').value, btn = $('#ct-go');
+        btn.disabled = true;
+        U.act(() => T.api.createTask(me, {
           title: $('#ct-title').value, description: $('#ct-desc').value, deptId: $('#ct-dept').value, category: $('#ct-cat').value,
           ownerId: $('#ct-owner').value, startDate: $('#ct-start').value, dueAt: date && time ? T.istToEpoch(date, time) : NaN, priority: pri,
           expectedTatHrs: +$('#ct-tat').value, kpiWeight: +$('#ct-w').value, reminder: $('#ct-rem').value, kpi: $('#ct-kpi').checked,
           dependsOn: $('#ct-dep').value ? [$('#ct-dep').value] : [], checklist: $('#ct-check').value.split('\n').map(s => s.trim())
-        }));
-        if (t && t.id) { U.closeLayer(); U.toast(`${t.id} created and ${T.userName(t.ownerId)} notified`); T.app.refresh(); }
+        })).then(t => {
+          btn.disabled = false;
+          if (t && t.id) { U.closeLayer(); U.toast(`${t.id} created and ${T.userName(t.ownerId)} notified`); T.app.refresh(); }
+        });
       };
     });
   };
@@ -166,6 +172,7 @@
   U.openTask = (id, tab = 'details') => {
     const me = T.app.me(), t = T.task(id);
     if (!t || !T.canView(me, t)) return U.toast('Task not found or you do not have access.', true);
+    U.currentTask = { id, tab };
     const manage = T.canManage(me, t), owner = T.isOwner(me, t);
     const blockers = T.blockedBy(t);
     const actions = [];
@@ -210,8 +217,8 @@
         <div class="checklist">${t.checklist.map(c => `<label><input type="checkbox" data-check="${c.id}" ${c.done ? 'checked' : ''} ${(owner || manage) ? '' : 'disabled'}> ${esc(c.text)}</label>`).join('') || '<span class="muted small">No checklist items</span>'}</div>
         ${(owner || manage) ? `<div style="display:flex;gap:6px;margin-top:6px"><input class="input" id="td-newcheck" placeholder="Add checklist item"><button class="btn sm" id="td-addcheck">Add</button></div>` : ''}
         <div class="section-title">Attachments / evidence</div>
-        ${t.attachments.map(a => `<div class="small">📎 ${esc(a.name)} <span class="muted">· ${(a.size / 1024).toFixed(0)} KB · ${esc(T.userName(a.by))} · ${T.fmt(a.at)}</span></div>`).join('') || '<span class="muted small">No attachments</span>'}
-        ${(owner || manage) ? `<div style="margin-top:6px"><input type="file" id="td-file"></div><div class="small muted">Demo build records file metadata only; production stores files in private storage with signed links.</div>` : ''}
+        ${t.attachments.map(a => `<div class="small">📎 ${a.path && T.isServer() ? `<a href="/api/attachments/${encodeURIComponent(t.id)}/${encodeURIComponent(a.id)}" target="_blank" rel="noopener">${esc(a.name)}</a>` : esc(a.name)} <span class="muted">· ${(a.size / 1024).toFixed(0)} KB · ${esc(T.userName(a.by))} · ${T.fmt(a.at)}</span></div>`).join('') || '<span class="muted small">No attachments</span>'}
+        ${(owner || manage) ? `<div style="margin-top:6px"><input type="file" id="td-file"></div><div class="small muted">${T.isServer() ? 'Files are stored privately; links expire after a few minutes. Max 25 MB.' : 'Demo build records file metadata only; the server edition stores files in private storage with signed links.'}</div>` : ''}
         <div class="section-title">Dependencies</div>
         ${t.dependsOn.length ? t.dependsOn.map(d => { const x = T.task(d); return x ? `<div class="small"><a href="#" data-open="${x.id}">${x.id}</a> ${esc(x.title)} — ${U.status(x)} · ${esc(T.userName(x.ownerId))}</div>` : ''; }).join('') : '<span class="muted small">None</span>'}
         ${manage ? `<div style="display:flex;gap:6px;margin-top:6px"><input class="input" id="td-dep" placeholder="Task ID, e.g. T360-0012"><button class="btn sm" id="td-adddep">Add dependency</button></div>` : ''}
@@ -234,41 +241,44 @@
     $$('[data-tab]', L).forEach(b => b.onclick = () => U.openTask(id, b.dataset.tab));
     $$('[data-open]', L).forEach(a => a.onclick = e => { e.preventDefault(); U.openTask(a.dataset.open); });
     const reopenDrawer = () => { T.app.refresh(); U.openTask(id, tab); };
-    const run = (fn, msg) => { if (U.act(fn, msg)) reopenDrawer(); };
+    const run = (fn, msg) => { U.act(fn, msg).then(ok => { if (ok) reopenDrawer(); }) };
 
     const prog = $('#td-prog', L);
     if (prog) { prog.oninput = () => $('#td-prog-v').textContent = prog.value + '%'; prog.onchange = () => run(() => T.api.setProgress(me, id, +prog.value), 'Progress saved'); }
     $$('[data-check]', L).forEach(c => c.onchange = () => run(() => T.api.toggleChecklist(me, id, c.dataset.check)));
     const ac = $('#td-addcheck', L); if (ac) ac.onclick = () => run(() => T.api.addChecklist(me, id, $('#td-newcheck').value));
-    const fi = $('#td-file', L); if (fi) fi.onchange = () => fi.files[0] && run(() => T.api.addAttachment(me, id, { name: fi.files[0].name, size: fi.files[0].size }), 'Attachment recorded');
+    const fi = $('#td-file', L); if (fi) fi.onchange = () => fi.files[0] && run(() => U.uploadAttachment(me, id, fi.files[0]), 'Attachment saved');
     const ad = $('#td-adddep', L); if (ad) ad.onclick = () => run(() => T.api.addDependency(me, id, $('#td-dep').value.trim().toUpperCase()), 'Dependency added');
     const pc = $('#td-post', L); if (pc) pc.onclick = () => run(() => T.api.comment(me, id, $('#td-comment').value), 'Comment posted');
 
     const A = {
       ack: () => run(() => T.api.acknowledge(me, id), 'Acknowledged'),
       start: () => run(() => T.api.setStatus(me, id, 'in_progress'), 'Moved to In Progress'),
-      hold: () => U.reasonPrompt('Put task on hold', 'Dependency / reason', '', r => { if (U.act(() => T.api.setStatus(me, id, 'on_hold', r), 'Task on hold')) reopenDrawer(); }),
-      submit: () => U.reasonPrompt('Submit completion', 'Completion remarks', `<div class="alert info">The submission timestamp is recorded by the system — it cannot be entered manually. Attach evidence on the Details tab before submitting.</div>`, r => { if (U.act(() => T.api.submit(me, id, r), 'Submitted for review')) reopenDrawer(); }),
+      hold: () => U.reasonPrompt('Put task on hold', 'Dependency / reason', '', r => { U.act(() => T.api.setStatus(me, id, 'on_hold', r), 'Task on hold').then(ok => { if (ok) reopenDrawer(); }) }),
+      submit: () => U.reasonPrompt('Submit completion', 'Completion remarks', `<div class="alert info">The submission timestamp is recorded by the system — it cannot be entered manually. Attach evidence on the Details tab before submitting.</div>`, r => { U.act(() => T.api.submit(me, id, r), 'Submitted for review').then(ok => { if (ok) reopenDrawer(); }) }),
       approve: () => run(() => T.api.approve(me, id), 'Approved and closed'),
-      reopen: () => U.reasonPrompt('Reopen task', 'What needs correction?', '', r => { if (U.act(() => T.api.reopen(me, id, r), 'Task reopened')) reopenDrawer(); }),
+      reopen: () => U.reasonPrompt('Reopen task', 'What needs correction?', '', r => { U.act(() => T.api.reopen(me, id, r), 'Task reopened').then(ok => { if (ok) reopenDrawer(); }) }),
       reassign: () => {
         const opts = T.assignableUsers(me).filter(u => u.id !== t.ownerId).map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(T.deptName(u.deptId))}</option>`).join('');
         U.reasonPrompt('Reassign task', 'Reason for reassignment', `<label class="field"><span>New assignee *</span><select class="input" id="ra-user">${opts}</select></label><div id="ra-hint"></div>
           <label class="field"><span>Cause</span><select class="input" id="ra-cause"><option value="workload">Workload balancing</option><option value="skill">Skill / expertise</option><option value="leave">Leave / absence</option><option value="performance">Performance</option><option value="scope">Scope change</option></select></label>`,
-          r => { if (U.act(() => T.api.reassign(me, id, $('#ra-user').value, r, $('#ra-cause').value), 'Task reassigned; both assignees notified')) reopenDrawer(); });
+          r => { U.act(() => T.api.reassign(me, id, $('#ra-user').value, r, $('#ra-cause').value), 'Task reassigned; both assignees notified').then(ok => { if (ok) reopenDrawer(); }) });
         const upd = () => $('#ra-hint').innerHTML = U.workloadHint($('#ra-user').value); $('#ra-user').onchange = upd; upd();
       },
       deadline: () => U.reasonPrompt('Change deadline', 'Reason for change', `<div class="alert info">Original deadline (${T.fmt(t.originalDueAt)}) is always preserved.</div><div class="grid2"><label class="field"><span>New due date *</span><input class="input" type="date" id="dl-d" value="${T.istDateStr(t.dueAt + T.DAY)}"></label><label class="field"><span>Due time (IST) *</span><input class="input" type="time" id="dl-t" value="${T.istTimeStr(t.dueAt)}"></label></div>
         <label class="field"><span>Attributable to *</span><select class="input" id="dl-a"><option value="employee">Employee request — KPI keeps original deadline</option><option value="manager">Manager / scope change — KPI uses new deadline</option><option value="external">External dependency — KPI uses new deadline</option></select></label>`,
-        r => { const nd = T.istToEpoch($('#dl-d').value, $('#dl-t').value); if (U.act(() => T.api.changeDeadline(me, id, nd, r, $('#dl-a').value), 'Deadline updated')) reopenDrawer(); }),
+        r => { const nd = T.istToEpoch($('#dl-d').value, $('#dl-t').value); U.act(() => T.api.changeDeadline(me, id, nd, r, $('#dl-a').value), 'Deadline updated').then(ok => { if (ok) reopenDrawer(); }) }),
       ext: () => t.externalDependency ? run(() => T.api.setExternalDependency(me, id, null), 'Exclusion removed') :
-        U.reasonPrompt('Approve external dependency', 'External dependency (who / what)', `<div class="alert info">Approved external dependencies are excluded from on-time and TAT KPIs.</div>`, r => { if (U.act(() => T.api.setExternalDependency(me, id, r), 'External dependency approved')) reopenDrawer(); }),
-      dup: () => { const n = U.act(() => T.api.duplicate(me, id)); if (n && n.id) { U.toast(`Duplicated as ${n.id}`); U.openTask(n.id); } },
+        U.reasonPrompt('Approve external dependency', 'External dependency (who / what)', `<div class="alert info">Approved external dependencies are excluded from on-time and TAT KPIs.</div>`, r => { U.act(() => T.api.setExternalDependency(me, id, r), 'External dependency approved').then(ok => { if (ok) reopenDrawer(); }) }),
+      dup: () => U.act(() => T.api.duplicate(me, id)).then(n => { if (n && n.id) { U.toast(`Duplicated as ${n.id}`); U.openTask(n.id); } }),
       archive: () => run(() => T.api.archive(me, id, !t.archived), t.archived ? 'Restored' : 'Archived'),
-      cancel: () => U.reasonPrompt('Cancel task', 'Reason for cancellation', '', r => { if (U.act(() => T.api.cancel(me, id, r), 'Task cancelled; reminders stopped')) reopenDrawer(); })
+      cancel: () => U.reasonPrompt('Cancel task', 'Reason for cancellation', '', r => { U.act(() => T.api.cancel(me, id, r), 'Task cancelled; reminders stopped').then(ok => { if (ok) reopenDrawer(); }) })
     };
     $$('[data-a]', L).forEach(b => b.onclick = () => A[b.dataset.a]());
   };
+
+  /* Overridden by js/remote.js in the server edition to upload the file itself. */
+  U.uploadAttachment = (me, id, file) => T.api.addAttachment(me, id, { name: file.name, size: file.size });
 
   /* ---------- export ---------- */
   U.taskRows = tasks => tasks.map(t => ({

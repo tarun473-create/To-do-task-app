@@ -197,9 +197,9 @@
           in_progress: () => T.api.setStatus(me, id, 'in_progress'),
           completed: () => T.api.approve(me, id)
         };
-        if (target === 'on_hold') return U.reasonPrompt('Put task on hold', 'Dependency / reason', '', r => { if (U.act(() => T.api.setStatus(me, id, 'on_hold', r), 'On hold')) U.closeLayer(); });
-        if (target === 'pending_review') return U.reasonPrompt('Submit completion', 'Completion remarks', '', r => { if (U.act(() => T.api.submit(me, id, r), 'Submitted for review')) U.closeLayer(); });
-        if (target === 'reopened') return U.reasonPrompt('Reopen task', 'What needs correction?', '', r => { if (U.act(() => T.api.reopen(me, id, r), 'Reopened')) U.closeLayer(); });
+        if (target === 'on_hold') return U.reasonPrompt('Put task on hold', 'Dependency / reason', '', r => { U.act(() => T.api.setStatus(me, id, 'on_hold', r), 'On hold').then(ok => { if (ok) U.closeLayer(); }) });
+        if (target === 'pending_review') return U.reasonPrompt('Submit completion', 'Completion remarks', '', r => { U.act(() => T.api.submit(me, id, r), 'Submitted for review').then(ok => { if (ok) U.closeLayer(); }) });
+        if (target === 'reopened') return U.reasonPrompt('Reopen task', 'What needs correction?', '', r => { U.act(() => T.api.reopen(me, id, r), 'Reopened').then(ok => { if (ok) U.closeLayer(); }) });
         if (!map[target]) return U.toast(`Tasks cannot be moved back to ${T.statusLabel(target)}.`, true);
         U.act(map[target], `Moved to ${T.statusLabel(target)}`);
       });
@@ -326,7 +326,7 @@
       U.modal(`Mark ${u.name} on leave`, `<div class="alert info">Open tasks are temporarily handed to the backup. Ownership history is retained, and new tasks assigned to ${esc(u.name)} route to the backup automatically.</div>
         <label class="field"><span>Backup employee</span><select class="input" id="lv-b">${opts}</select></label>`, `<button class="btn" data-close>Cancel</button><button class="btn primary" id="lv-ok">Confirm</button>`, m => {
         $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
-        $('#lv-ok').onclick = () => { if (U.act(() => T.api.setLeave(me, u.id, true, $('#lv-b').value), 'Leave recorded; tasks handed to backup')) U.closeLayer(); };
+        $('#lv-ok').onclick = () => { U.act(() => T.api.setLeave(me, u.id, true, $('#lv-b').value), 'Leave recorded; tasks handed to backup').then(ok => { if (ok) U.closeLayer(); }) };
       });
     });
   };
@@ -349,13 +349,15 @@
       <div class="actions"><button class="btn primary" id="run-engine">▶ Run follow-up engine now</button><button class="btn" id="fu-exp">Export log</button></div></div>
       <div class="dash-grid"><div class="card span-5"><div class="card-head"><h2>Escalation matrix</h2>${me.role === 'super_admin' ? '<a href="#/admin">Configure →</a>' : ''}</div>
         <table><thead><tr><th>Trigger</th><th>Action</th><th>Recipient</th></tr></thead><tbody>${rules.map(r => `<tr><td class="small">${r[0]}</td><td class="small">${r[1]}</td><td class="small">${r[2]}</td></tr>`).join('')}</tbody></table>
-        <p class="small muted">Reminders stop automatically when a task is submitted, completed or cancelled. Email &amp; Teams deliveries are <b>simulated</b> in this standalone build; the production server sends them via Microsoft Graph and records the delivery status here.</p></div>
+        <p class="small muted">Reminders stop automatically when a task is submitted, completed or cancelled. ${T.isServer() ? 'Email &amp; Teams are sent by the server through Microsoft Graph; ✓ sent · ~ queued · ✕ failed · – skipped (channel not configured).' : 'Email &amp; Teams deliveries are <b>simulated</b> in this standalone build; the server edition sends them via Microsoft Graph and records the delivery status here.'}</p></div>
       <div class="card span-7"><div class="card-head"><h2>Notification delivery history</h2><select class="input" id="fu-type" style="width:auto"><option value="">All types</option>${types.map(t => `<option value="${t}" ${f.type === t ? 'selected' : ''}>${esc(T.notifTypeLabel(t))}</option>`).join('')}</select></div>
         <div class="table-wrap" style="max-height:620px"><table><thead><tr><th>When (IST)</th><th>Type</th><th>To</th><th>Message</th><th>Channels</th></tr></thead><tbody>
-        ${list.map(n => `<tr ${n.taskId ? `class="click" data-task="${n.taskId}"` : ''}><td class="small nowrap">${T.fmt(n.at)}</td><td class="small">${esc(T.notifTypeLabel(n.type))}</td><td class="small nowrap">${esc(T.userName(n.to))}</td><td class="small">${esc(n.message)}</td><td class="small nowrap">${n.channels.map(c => `<span title="${c.status}">${c.channel === 'in-app' ? '🔔' : c.channel === 'email' ? '✉' : '💬'}${c.status === 'delivered' ? '✓' : '~'}</span>`).join(' ')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No notifications</td></tr>'}
+        ${list.map(n => `<tr ${n.taskId ? `class="click" data-task="${n.taskId}"` : ''}><td class="small nowrap">${T.fmt(n.at)}</td><td class="small">${esc(T.notifTypeLabel(n.type))}</td><td class="small nowrap">${esc(T.userName(n.to))}</td><td class="small">${esc(n.message)}</td><td class="small nowrap">${n.channels.map(c => `<span title="${esc(c.status + (c.error ? ': ' + c.error : ''))}">${c.channel === 'in-app' ? '🔔' : c.channel === 'email' ? '✉' : '💬'}${({ delivered: '✓', sent: '✓', failed: '✕', skipped: '–' })[c.status] || '~'}</span>`).join(' ')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No notifications</td></tr>'}
         </tbody></table></div></div></div>`;
     const v = $('#view'); wireRows(v);
-    $('#run-engine').onclick = () => { const n = T.engine.run(); U.toast(n ? `${n} new notification(s) sent` : 'Engine ran — nothing new to send (duplicates suppressed)'); T.app.refresh(); };
+    $('#run-engine').onclick = () => Promise.resolve(T.isServer() ? T.remote.runEngine() : T.engine.run())
+      .then(n => { U.toast(n ? `${n} new notification(s) sent` : 'Engine ran — nothing new to send (duplicates suppressed)'); T.app.refresh(); })
+      .catch(e => U.toast(e.message, true));
     $('#fu-type').onchange = e => T.app.go('followups', { type: e.target.value });
     $('#fu-exp').onclick = () => U.exportCSV('task360-notifications', list.map(n => ({ 'When (IST)': T.fmt(n.at), Type: T.notifTypeLabel(n.type), To: T.userName(n.to), Task: n.taskId || '', Message: n.message, Channels: n.channels.map(c => `${c.channel}:${c.status}`).join(' ') })));
   };
@@ -386,7 +388,7 @@
           $('#rc-ok').onclick = () => {
             const fq = $('#rc-f').value, dn = +$('#rc-d').value, owner = T.user($('#rc-o').value);
             const p = T.PRIORITIES.find(x => x.id === $('#rc-p').value);
-            if (U.act(() => T.api.saveRecurring(me, { title: $('#rc-t').value, frequency: fq, dayOfMonth: dn || 1, weekday: Math.min(dn, 6), ownerId: owner && owner.id, deptId: owner && owner.deptId, dueTime: $('#rc-tm').value, priority: p.id, tatHrs: p.tat, category: $('#rc-c').value }), 'Recurring template saved')) U.closeLayer();
+            U.act(() => T.api.saveRecurring(me, { title: $('#rc-t').value, frequency: fq, dayOfMonth: dn || 1, weekday: Math.min(dn, 6), ownerId: owner && owner.id, deptId: owner && owner.deptId, dueTime: $('#rc-tm').value, priority: p.id, tatHrs: p.tat, category: $('#rc-c').value }), 'Recurring template saved').then(ok => { if (ok) U.closeLayer(); })
           };
         });
     };
@@ -487,7 +489,8 @@
         <div class="section-title">Holidays</div>
         <table><tbody>${s.holidays.sort((a, b) => a.date.localeCompare(b.date)).map((h, i) => `<tr><td>${h.date}</td><td>${esc(h.name)}</td><td><button class="btn sm danger" data-delhol="${h.date}">Remove</button></td></tr>`).join('')}</tbody></table>
         <div style="display:flex;gap:6px;margin-top:8px"><input class="input" type="date" id="hol-d"><input class="input" id="hol-n" placeholder="Holiday name"><button class="btn" id="hol-add">Add</button></div></div>`,
-      data: `<div class="card" style="max-width:640px"><h2>Data</h2><div class="alert warn">This standalone build stores <b>demonstration data</b> in this browser only. Deploy the server edition (see docs/ARCHITECTURE.md) for multi-user access and permanent storage.</div>
+      data: T.isServer() ? `<div class="card" style="max-width:640px"><h2>Data</h2><div class="alert info">Data is stored in the shared PostgreSQL database${D().demo ? ' and currently contains <b>demonstration data</b> (see server/README.md to start with an empty database)' : ''}. Database backups are handled by Supabase.</div>
+        <button class="btn" id="dt-exp">Download snapshot of what you can see (JSON)</button></div>` : `<div class="card" style="max-width:640px"><h2>Data</h2><div class="alert warn">This standalone build stores <b>demonstration data</b> in this browser only. Deploy the server edition (see server/README.md) for multi-user access and permanent storage.</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="dt-exp">Download backup (JSON)</button><label class="btn">Restore backup<input type="file" id="dt-imp" accept=".json" hidden></label><button class="btn danger" id="dt-reset">Reset demo data</button></div></div>`
     };
     $('#view').innerHTML = `<div class="page-head"><div><h1>Admin settings</h1><div class="sub">System configuration — every change is audited</div></div></div>
@@ -527,6 +530,7 @@
     }
     if (tab === 'data') {
       $('#dt-exp').onclick = () => U.download('task360-backup.json', T.store.exportJSON(), 'application/json');
+      if (T.isServer()) return;
       $('#dt-imp').onchange = e => { const fl = e.target.files[0]; if (!fl) return; fl.text().then(txt => U.act(() => T.store.importJSON(txt), 'Backup restored')); };
       $('#dt-reset').onclick = () => { if (confirm('Reset all data to a fresh demonstration dataset?')) { T.store.reset(); T.engine.run(); U.toast('Demo data reset'); T.app.refresh(); } };
     }
@@ -546,7 +550,8 @@
         $('#eu-ok').onclick = () => {
           const rec = { id: id || undefined, name: $('#eu-n').value.trim(), email: $('#eu-e').value.trim(), role: $('#eu-r').value, deptId: $('#eu-d').value || null, managerId: $('#eu-m').value || null, teams: $$('[data-team]', m).filter(i => i.checked).map(i => i.dataset.team) };
           if (id) rec.active = $('#eu-a').checked;
-          if (U.act(() => T.api.saveUser(me, rec), 'User saved')) { U.closeLayer(); T.app.renderUserSwitch(); }
+          if (!id && T.isServer() && !rec.email) return U.toast('Email is required — the user signs in with it.', true);
+          U.act(() => T.api.saveUser(me, rec), 'User saved').then(ok => { if (ok) { U.closeLayer(); T.app.renderUserSwitch(); } })
         };
       });
   }
@@ -600,7 +605,7 @@
   V.assistant = (f, me) => {
     if (!chatLog.length) chatLog.push({ who: 'bot', text: `Hello ${me.name.split(' ')[0]}. I answer using only Task360 data you are authorised to see. What would you like to know?` });
     const sugg = ['Which tasks require my attention today?', 'Who has the highest pendency?', 'Which department is consistently missing deadlines?', 'Show bottlenecks', 'KPI ranking this month'];
-    $('#view').innerHTML = `<div class="page-head"><div><h1>AI management assistant</h1><div class="sub">Answers from live application data, filtered by your access. This standalone build uses a built-in rules engine; the server edition can connect an LLM with the same data-access rules.</div></div></div>
+    $('#view').innerHTML = `<div class="page-head"><div><h1>AI management assistant</h1><div class="sub">Answers from live application data, filtered by your access, using a built-in rules engine (no data leaves Task360).</div></div></div>
       <div class="card" style="max-width:900px"><div class="chat" id="chat">${chatLog.map(m => `<div class="msg ${m.who}">${esc(m.text)}</div>`).join('')}</div>
       <div class="chips">${sugg.map(x => `<button class="chip">${esc(x)}</button>`).join('')}</div>
       <form id="chat-f" style="display:flex;gap:8px"><input class="input" id="chat-q" placeholder="Ask about pendency, overdue work, bottlenecks, KPIs…" autocomplete="off"><button class="btn primary">Ask</button></form></div>`;

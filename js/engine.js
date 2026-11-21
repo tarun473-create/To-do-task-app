@@ -9,6 +9,9 @@
   const { HOUR, DAY } = T;
   const D = () => T.store.data;
   const now = () => Date.now();
+  /* mode 'standalone' (browser-only demo) or 'server' (rules executed authoritatively on the server) */
+  T.config = Object.assign({ mode: 'standalone' }, (typeof window !== 'undefined' && window.T360_CONFIG) || {});
+  T.isServer = () => T.config.mode === 'server';
 
   /* ---------------- lookups ---------------- */
   T.user = id => D().users.find(u => u.id === id);
@@ -108,9 +111,10 @@
     const ch = d.settings.channels;
     const channels = [];
     if (ch.inApp) channels.push({ channel: 'in-app', status: 'delivered' });
-    // Email / Teams require the server connector (Microsoft Graph); in this standalone build they are logged as simulated.
-    if (ch.email) channels.push({ channel: 'email', status: 'simulated' });
-    if (ch.teams) channels.push({ channel: 'teams', status: 'simulated' });
+    // Email / Teams: queued for the server delivery worker (Microsoft Graph); simulated in the standalone build.
+    const ext = T.isServer() ? 'queued' : 'simulated';
+    if (ch.email) channels.push({ channel: 'email', status: ext });
+    if (ch.teams) channels.push({ channel: 'teams', status: ext });
     recipients.forEach(uid => {
       d.notifications.push({
         id: 'n' + now().toString(36) + (notifySeq++), type, taskId: task ? task.id : null, to: uid,
@@ -335,7 +339,7 @@
       need(file && file.name, 'No file selected.');
       need(file.size <= 25 * 1024 * 1024, 'Files must be 25 MB or smaller.');
       // Demo build stores metadata only; production uploads to private object storage with signed URLs.
-      t.attachments.push({ id: 'a' + now().toString(36), name: file.name, size: file.size, by: actor.id, at: now() });
+      t.attachments.push({ id: 'a' + now().toString(36) + Math.random().toString(36).slice(2, 6), name: String(file.name).slice(0, 200), size: +file.size || 0, by: actor.id, at: now(), ...(file.path ? { path: file.path, mime: file.mime || '' } : {}) });
       audit(actor.id, 'attachment', t, `Attached ${file.name}`); commit();
     },
     addDependency(actor, id, depId) {
@@ -349,6 +353,17 @@
     /* --- admin --- */
     updateSettings(actor, patch, label) {
       if (actor.role !== 'super_admin') deny('Only the Super Admin can change system settings.');
+      const ALLOWED = ['companyName', 'workingDays', 'businessHours', 'holidays', 'kpiWeights', 'kpiPolicy', 'rules', 'channels'];
+      const bad = Object.keys(patch || {}).filter(k => !ALLOWED.includes(k));
+      need(!bad.length, `Unknown setting(s): ${bad.join(', ')}`);
+      if (patch.kpiWeights) {
+        const keys = ['onTime', 'completion', 'quality', 'tat', 'responsiveness'];
+        need(keys.every(k => Number.isFinite(patch.kpiWeights[k]) && patch.kpiWeights[k] >= 0), 'Every KPI weight must be a non-negative number.');
+        need(keys.reduce((a, k) => a + patch.kpiWeights[k], 0) === 100, 'KPI weights must total exactly 100%.');
+        patch.kpiWeights = Object.fromEntries(keys.map(k => [k, patch.kpiWeights[k]]));
+      }
+      if (patch.workingDays) need(Array.isArray(patch.workingDays) && patch.workingDays.length && patch.workingDays.every(d => Number.isInteger(d) && d >= 0 && d <= 6), 'Invalid working days.');
+      if (patch.rules) need(patch.rules.escalation2Days > patch.rules.escalation1Days, 'Second escalation must be later than the first.');
       Object.assign(D().settings, patch);
       audit(actor.id, 'settings', null, label || 'Settings updated'); commit();
     },
@@ -356,7 +371,11 @@
       if (actor.role !== 'super_admin') deny('Only the Super Admin can manage users.');
       need(u.name && u.name.trim(), 'Name is required.');
       need(T.ROLES[u.role], 'Invalid role.');
+      if (T.isServer()) need(u.email && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(u.email), 'A valid work email is required — it is used to sign in.');
       const d = D();
+      if (u.email) need(!d.users.some(x => x.id !== u.id && x.email && x.email.toLowerCase() === u.email.toLowerCase()), 'Another user already has this email.');
+      if (u.id) need(T.user(u.id), 'User not found.');
+      u = { id: u.id, name: u.name.trim(), email: (u.email || '').trim(), role: u.role, deptId: u.deptId || null, managerId: u.managerId || null, teams: Array.isArray(u.teams) ? u.teams : [], ...(u.id ? { active: u.active !== false } : {}) };
       if (u.id) { const ex = T.user(u.id); Object.assign(ex, u); audit(actor.id, 'user', null, `User updated: ${u.name}`); }
       else { u.id = 'u' + (Math.max(...d.users.map(x => +x.id.slice(1))) + 1); u.active = true; u.onLeave = false; d.users.push(u); audit(actor.id, 'user', null, `User created: ${u.name} (${T.ROLES[u.role]})`); }
       commit(); return u;
@@ -386,19 +405,37 @@
       }
       commit();
     },
-    saveRecurring(actor, r) {
+    saveRecurring(actor, input) {
       if (!T.canCreate(actor)) deny();
-      need(r.title && r.title.trim(), 'Title is required.');
-      need(T.user(r.ownerId), 'Select an assignee.');
+      need(input && input.title && String(input.title).trim(), 'Title is required.');
+      const owner = T.user(input.ownerId);
+      need(owner && owner.active, 'Select an assignee.');
+      need(T.assignableUsers(actor).some(u => u.id === owner.id), 'You can only set up recurring tasks for your authorised teams.');
+      need(['daily', 'weekly', 'monthly', 'quarterly', 'annual'].includes(input.frequency), 'Invalid frequency.');
+      need(/^\d{2}:\d{2}$/.test(input.dueTime || ''), 'Invalid due time.');
+      const pr = T.PRIORITIES.find(p => p.id === input.priority) || T.PRIORITIES[1];
+      // Only these fields can be set by a user; creator, schedule state and IDs are controlled here.
+      const r = {
+        title: String(input.title).trim().slice(0, 160), description: String(input.description || '').slice(0, 2000),
+        frequency: input.frequency, dayOfMonth: Math.min(Math.max(parseInt(input.dayOfMonth, 10) || 1, 1), 28),
+        weekday: Math.min(Math.max(parseInt(input.weekday, 10) || 0, 0), 6), month: Math.min(Math.max(parseInt(input.month, 10) || 3, 1), 12),
+        dueTime: input.dueTime, ownerId: owner.id, deptId: owner.deptId, priority: pr.id,
+        tatHrs: Math.max(parseInt(input.tatHrs, 10) || pr.tat, 1), category: T.CATEGORIES.includes(input.category) ? input.category : 'Ad hoc'
+      };
       const d = D();
-      if (r.id) Object.assign(d.recurring.find(x => x.id === r.id), r);
-      else { r.id = 'r' + (d.recurring.length + 1) + now().toString(36).slice(-3); r.createdBy = actor.id; r.active = true; r.lastKey = null; d.recurring.push(r); }
+      if (input.id) {
+        const ex = d.recurring.find(x => x.id === input.id); need(ex, 'Recurring template not found.');
+        need(T.canSeeAll(actor) || ex.createdBy === actor.id || T.managerTeams(actor).includes(ex.deptId), 'You cannot edit this recurring template.');
+        Object.assign(ex, r);
+      } else { r.id = 'r' + (d.recurring.length + 1) + now().toString(36).slice(-3); r.createdBy = actor.id; r.active = true; r.lastKey = null; d.recurring.push(r); }
       audit(actor.id, 'recurring', null, `Recurring template saved: ${r.title} (${r.frequency})`); commit();
       T.engine.run();
     },
     toggleRecurring(actor, id) {
       if (!T.canCreate(actor)) deny();
-      const r = D().recurring.find(x => x.id === id); r.active = !r.active;
+      const r = D().recurring.find(x => x.id === id); need(r, 'Recurring template not found.');
+      need(T.canSeeAll(actor) || r.createdBy === actor.id || T.managerTeams(actor).includes(r.deptId), 'You cannot change this recurring template.');
+      r.active = !r.active;
       audit(actor.id, 'recurring', null, `${r.title} ${r.active ? 'activated' : 'paused'}`); commit();
     },
     markRead(actor, ids) {

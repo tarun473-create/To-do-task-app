@@ -786,7 +786,7 @@
             <td class="small nowrap">${(t.approvals || []).length ? t.approvals.map(a => `${esc(T.userName(a.approverId))} <span class="pill ${a.status === 'approved' ? 's-completed' : a.status === 'pending' ? 's-in_approval' : a.status === 'rejected' ? 's-reopened' : 's-assigned'}">${esc(a.status)}</span>`).join('<br>') : '<span class="muted">—</span>'}</td>
             <td class="small nowrap">${T.fmt(t.dueAt)}</td><td>${U.status(t)}${U.stageLine(t)}</td>
             <td class="small">${t.scheduleRequired ? ((t.attachments || []).length ? '<span class="pill s-completed">Attached</span>' : '<span class="pill s-on_hold">Required</span>') : '<span class="muted">—</span>'}</td></tr>`
-          : `<tr><td class="tid">${esc(i.sl)}</td><td><div class="task-title">${esc(i.title)}</div><div class="tid">${esc([i.module, i.area].filter(Boolean).join(' · '))}</div></td><td class="small muted">${i.assignerId ? esc(T.userName(i.assignerId)) : '—'}</td><td class="small muted">${i.ownerId ? esc(T.userName(i.ownerId)) + ' (default)' : 'No default owner'}</td><td class="small muted">${i.approverId ? esc(T.userName(i.approverId)) : '—'}</td><td class="small muted">WD ${i.dueWd || 5}</td><td><span class="pill s-assigned">Not assigned for ${esc(label)}</span></td><td class="small">${i.scheduleRequired ? 'Required' : '—'}</td></tr>`).join('') || `<tr><td colspan="8" class="empty">${admin ? 'No activities yet. Add them on the Activities tab.' : `You have no month-end close activities for ${esc(label)}.`}</td></tr>`}
+          : `<tr><td class="tid">${esc(i.sl)}</td><td><div class="task-title">${esc(i.title)}</div><div class="tid">${esc([i.module, i.area].filter(Boolean).join(' · '))}</div></td><td class="small muted">${i.assignerId ? esc(T.userName(i.assignerId)) : '—'}</td><td class="small muted">${i.ownerId ? esc(T.userName(i.ownerId)) + ' (default)' : 'No default owner'}</td><td class="small muted">${T.closeApprover(i, i.ownerId) ? esc(T.userName(T.closeApprover(i, i.ownerId))) : '—'}</td><td class="small muted">WD ${i.dueWd || 5}</td><td><span class="pill s-assigned">Not assigned for ${esc(label)}</span></td><td class="small">${i.scheduleRequired ? 'Required' : '—'}</td></tr>`).join('') || `<tr><td colspan="8" class="empty">${admin ? 'No activities yet. Add them on the Activities tab.' : `You have no month-end close activities for ${esc(label)}.`}</td></tr>`}
         </tbody></table></div></div>`;
     }
 
@@ -795,13 +795,15 @@
       const open = mineOnly(items.filter(i => i.active && !byItem.has(i.id)));
       const created = mineOnly(items.filter(i => byItem.has(i.id)));
       body = `<div class="alert info">${admin ? '' : '<b>Your activities as assigner.</b> '}For each activity choose this month’s assigner (who assigns it and does the final review), owner, due date and approver (who approves the work before it can be submitted), then create the tasks. Owners are notified straight away. Due dates default to the activity’s working day (WD) after month end, skipping weekly offs and holidays.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><button class="btn" id="pl-xl-down">⬇ Download ${esc(label)} calendar (Excel)</button><label class="btn">⬆ Upload filled calendar<input type="file" id="pl-xl-up" accept=".xlsx,.xls,.csv" hidden></label></div>
+        <div id="pl-upload-notes"></div>
         ${open.length ? `<div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="pl-all" checked title="Tick all"></th><th>#</th><th>Activity</th><th>Assigner</th><th>Owner *</th><th>Co-owners</th><th>Approver</th><th>Due date</th><th>Schedule</th></tr></thead><tbody>
         ${open.map(i => `<tr data-plan="${i.id}"><td><input type="checkbox" data-pl-on checked></td><td class="tid">${esc(i.sl)}</td>
           <td style="min-width:220px"><div class="task-title">${esc(i.title)}</div><div class="tid">${esc([i.module, i.area].filter(Boolean).join(' · '))}</div></td>
           <td>${admin ? `<select class="input" data-pl-asg style="min-width:140px">${opt(i.assignerId || me.id, users.filter(u => u.role !== 'employee'))}</select>` : `<span class="small">${esc(me.name)}</span>`}</td>
           <td><select class="input" data-pl-owner style="min-width:150px"><option value="">— choose —</option>${opt(i.ownerId, admin ? users : T.assignableUsers(me))}</select></td>
           <td>${coPicker(i.coOwners || [], users)}</td>
-          <td><select class="input" data-pl-appr style="min-width:140px"><option value="">— none —</option>${opt(i.approverId, users)}</select></td>
+          <td><select class="input" data-pl-appr data-auto="${i.approverId ? '0' : '1'}" style="min-width:140px"><option value="">— no approval —</option>${opt(T.closeApprover(i, i.ownerId), users)}</select><div class="small muted" data-pl-appr-hint>${i.approverId ? '' : 'reporting manager'}</div></td>
           <td><input class="input" type="date" data-pl-due value="${T.closeDueDate(period, i.dueWd || 5)}" style="min-width:140px"><div class="small muted">WD ${i.dueWd || 5}</div></td>
           <td class="small">${i.scheduleRequired ? 'Required' : '—'}</td></tr>`).join('')}
         </tbody></table></div></div>
@@ -814,13 +816,13 @@
     }
 
     if (tab === 'items') {
-      body = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap"><span class="small muted">The checklist every month starts from. Changes apply to months you assign after the change.</span><button class="btn primary" id="ci-add">＋ Add activity</button></div>
+      body = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap"><span class="small muted">The checklist every month starts from. Changes apply to months you assign after the change.</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="ci-xl-down">⬇ Download Excel template</button><label class="btn">⬆ Upload checklist (Excel)<input type="file" id="ci-xl-up" accept=".xlsx,.xls,.csv" hidden></label><button class="btn primary" id="ci-add">＋ Add activity</button></span></div>
         <div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th>#</th><th>Activity</th><th>Module</th><th>Department</th><th>Schedule</th><th>Assigner</th><th>Default owner</th><th>Approver</th><th>Due</th><th></th></tr></thead><tbody>
         ${items.map(i => `<tr style="${i.active ? '' : 'opacity:.55'}"><td class="tid">${esc(i.sl)}</td><td class="task-title">${esc(i.title)}${i.active ? '' : ' <span class="pill s-cancelled">inactive</span>'}</td>
           <td class="small">${esc([i.module, i.area].filter(Boolean).join(' · ') || '—')}</td><td class="small">${esc(T.deptName(i.deptId))}</td><td class="small">${i.scheduleRequired ? 'Required' : '—'}</td>
           <td class="small">${i.assignerId ? esc(T.userName(i.assignerId)) : '<span style="color:var(--danger)">not set</span>'}</td>
           <td class="small">${i.ownerId ? esc(T.userName(i.ownerId)) : '<span style="color:var(--danger)">not set</span>'}${(i.coOwners || []).length ? `<div class="muted">+ ${esc(names(i.coOwners))}</div>` : ''}</td>
-          <td class="small">${i.approverId ? esc(T.userName(i.approverId)) : '—'}</td><td class="small nowrap">WD ${i.dueWd || 5}</td><td><button class="btn sm" data-ci-edit="${i.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="empty">No activities yet.</td></tr>'}
+          <td class="small">${i.approverId === 'none' ? '<span class="muted">No approval</span>' : i.approverId ? esc(T.userName(i.approverId)) : `<span class="muted">Reporting manager${T.closeApprover(i, i.ownerId) ? ` (${esc(T.userName(T.closeApprover(i, i.ownerId)))})` : ''}</span>`}</td><td class="small nowrap">WD ${i.dueWd || 5}</td><td><button class="btn sm" data-ci-edit="${i.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="empty">No activities yet.</td></tr>'}
         </tbody></table></div></div>`;
     }
 
@@ -833,8 +835,18 @@
       const picked = $$('[data-co-id]', d).filter(c => c.checked).map(c => c.parentElement.textContent.trim());
       $('summary', d).textContent = picked.length ? picked.join(', ') : '＋ Add';
     }));
+    if (tab === 'plan' && $('#pl-xl-down')) {
+      $('#pl-xl-down').onclick = () => downloadCloseTemplate(period).catch(e => U.toast(e.message, true));
+      $('#pl-xl-up').onchange = e => { const fl = e.target.files[0]; if (fl) uploadPlan(me, fl, v); e.target.value = ''; };
+    }
     if (tab === 'plan' && $('#pl-go')) {
       $('#pl-all').onchange = e => $$('[data-pl-on]', v).forEach(c => c.checked = e.target.checked);
+      // Approver follows the owner's reporting manager until someone picks an approver by hand.
+      $$('[data-plan]', v).forEach(tr => {
+        const ap = $('[data-pl-appr]', tr), hint = $('[data-pl-appr-hint]', tr);
+        $('[data-pl-owner]', tr).addEventListener('change', e => { if (ap.dataset.auto === '1') { ap.value = T.closeApprover({}, e.target.value) || ''; hint.textContent = 'reporting manager'; } });
+        ap.addEventListener('change', () => { ap.dataset.auto = '0'; hint.textContent = ''; });
+      });
       $('#pl-go').onclick = () => {
         const time = $('#pl-time').value || '18:00';
         const rows = $$('[data-plan]', v).filter(r => $('[data-pl-on]', r).checked).map(r => ({
@@ -854,9 +866,176 @@
     }
     if (tab === 'items') {
       $('#ci-add').onclick = () => closeItemModal(me, null);
+      $('#ci-xl-down').onclick = () => downloadCloseTemplate(period).catch(e => U.toast(e.message, true));
+      $('#ci-xl-up').onchange = e => { const fl = e.target.files[0]; if (fl) uploadChecklist(me, fl); e.target.value = ''; };
       $$('[data-ci-edit]', v).forEach(b => b.onclick = () => closeItemModal(me, b.dataset.ciEdit));
     }
   };
+  /* ================= MONTH-END CLOSE: EXCEL TEMPLATE ================= */
+  const XL_COLS = [
+    ['sl', 'Sl'], ['title', 'Activity'], ['schedule', 'Schedule required (YES/NO)'], ['module', 'Module'], ['area', 'Sub-module'],
+    ['dept', 'Department'], ['owner', 'Owner'], ['co', 'Co-owners (separate with /)'], ['assigner', 'Assigner'],
+    ['approver', "Approver (blank = owner's reporting manager, NONE = no approval)"], ['wd', 'Due working day after month end'],
+    ['due', 'Due date (DD-MM-YYYY)'], ['assign', 'Assign this month (YES/NO)'], ['active', 'Active (YES/NO)']
+  ];
+  const fmtDMY = ds => ds ? ds.split('-').reverse().join('-') : '';
+  /* Build the Excel workbook: the checklist with this month's dates, plus a sheet of valid names and instructions. */
+  async function downloadCloseTemplate(period) {
+    const X = await U.loadXLSX();
+    const label = T.periodLabel(period);
+    const items = T.closeItems();
+    const rows = items.length ? items.map(i => {
+      const app = i.approverId === 'none' ? 'NONE' : i.approverId ? T.userName(i.approverId) : '';
+      return [i.sl, i.title, i.scheduleRequired ? 'YES' : 'NO', i.module || '', i.area || '', i.deptId ? T.deptName(i.deptId) : '',
+        i.ownerId ? T.userName(i.ownerId) : '', (i.coOwners || []).map(T.userName).join(' / '), i.assignerId ? T.userName(i.assignerId) : '',
+        app, i.dueWd || 5, fmtDMY(T.closeDueDate(period, i.dueWd || 5)), i.active ? 'YES' : 'NO', i.active ? 'YES' : 'NO'];
+    }) : [[1, 'Bank reconciliation', 'NO', 'Banking', 'Treasury', D().departments[0] ? D().departments[0].name : '', '', '', '', '', 3, fmtDMY(T.closeDueDate(period, 3)), 'YES', 'YES']];
+    const head = XL_COLS.map(c => c[1]);
+    head[11] = `Due date for ${label} close (DD-MM-YYYY)`; head[12] = `Assign for ${label} (YES/NO)`;
+    const ws = X.utils.aoa_to_sheet([head, ...rows]);
+    ws['!cols'] = [6, 48, 12, 14, 14, 20, 20, 26, 18, 26, 12, 18, 14, 10].map(w => ({ wch: w }));
+    ws['!autofilter'] = { ref: `A1:N${rows.length + 1}` };
+    const people = D().users.filter(u => u.active).map(u => [u.name, u.email || '', T.ROLES[u.role], T.deptNames(u), T.userName(u.managerId)]);
+    const help = [
+      ['How to use this template'],
+      ['1. Edit the "Close calendar" sheet in Excel. Keep the header row. One row per activity.'],
+      ['2. Owner, Co-owners, Assigner and Approver: use the names (or work emails) exactly as on the "People" sheet. Separate several co-owners with /.'],
+      ["3. Approver: leave blank to use the owner's reporting manager; write NONE if the activity needs no approval."],
+      ['4. Due working day: the working day after month end when it is due (e.g. 3 = third working day; weekly offs and holidays are skipped).'],
+      [`5. Due date: the date for ${label} close. Leave blank to use the working day.`],
+      ['6. Upload on Month-end Close → Activities to update the checklist (all months), or on Plan & assign to fill in one month before creating its tasks.'],
+      ['7. Active = NO removes an activity from future months. Assign this month = NO skips it for that month only.'],
+      [], ['Departments'], ...D().departments.map(d => [d.name])
+    ];
+    const wb = X.utils.book_new();
+    X.utils.book_append_sheet(wb, ws, 'Close calendar');
+    const wp = X.utils.aoa_to_sheet([['Name', 'Work email', 'Role', 'Departments', 'Reports to'], ...people]);
+    wp['!cols'] = [24, 32, 18, 40, 22].map(w => ({ wch: w }));
+    X.utils.book_append_sheet(wb, wp, 'People');
+    const wh = X.utils.aoa_to_sheet(help); wh['!cols'] = [{ wch: 120 }];
+    X.utils.book_append_sheet(wb, wh, 'How to fill');
+    const out = X.write(wb, { bookType: 'xlsx', type: 'array' });
+    U.download(`Month-end close calendar - ${label}.xlsx`, out, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  }
+
+  /* Read an uploaded .xlsx / .csv into activity rows, resolving people and departments. */
+  async function readCloseFile(file) {
+    const X = await U.loadXLSX();
+    const wb = X.read(await file.arrayBuffer(), { type: 'array' });
+    const ws = wb.Sheets['Close calendar'] || wb.Sheets[wb.SheetNames[0]];
+    const grid = X.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true, blankrows: false });
+    if (!grid.length) throw new Error('The file is empty.');
+    const head = grid[0].map(h => String(h).trim().toLowerCase());
+    const col = {};
+    const find = (key, test) => { const i = head.findIndex(test); if (i >= 0 && col[key] === undefined) col[key] = i; };
+    find('sl', h => h === 'sl' || h === 'sl #' || h === 'sl no' || h === '#');
+    find('title', h => h.startsWith('activity'));
+    find('schedule', h => h.startsWith('schedule'));
+    find('area', h => h.startsWith('sub-module') || h.startsWith('sub module') || h.startsWith('submodule'));
+    find('module', h => h === 'module' || h.startsWith('module'));
+    find('dept', h => h.startsWith('department'));
+    find('co', h => h.startsWith('co-owner') || h.startsWith('co owner') || h.startsWith('coowner'));
+    find('owner', h => h === 'owner' || h.startsWith('owner'));
+    find('assigner', h => h.startsWith('assigner') || h.startsWith('assigned by'));
+    find('approver', h => h.startsWith('approver'));
+    find('wd', h => h.startsWith('due working day') || h === 'wd' || h.startsWith('due wd'));
+    find('due', h => h.startsWith('due date'));
+    find('assign', h => h.startsWith('assign for') || h.startsWith('assign this month'));
+    find('active', h => h.startsWith('active'));
+    if (col.title === undefined) throw new Error('Could not find the "Activity" column. Use the downloaded template.');
+    const users = D().users.filter(u => u.active);
+    const person = (txt, problems, what) => {
+      const s = String(txt || '').trim(); if (!s) return null;
+      const q = s.toLowerCase();
+      const hits = users.filter(u => (u.email || '').toLowerCase() === q || u.name.toLowerCase() === q);
+      const pref = hits.length ? hits : users.filter(u => u.name.toLowerCase().startsWith(q + ' ') || u.name.toLowerCase().split(' ')[0] === q);
+      if (pref.length === 1) return pref[0].id;
+      problems.push(pref.length ? `${what} “${s}” matches ${pref.map(u => u.name).join(' and ')} — write the full name` : `${what} “${s}” is not a team member`);
+      return undefined;
+    };
+    const yes = v => /^(y|yes|true|1)$/i.test(String(v).trim());
+    const no = v => /^(n|no|false|0)$/i.test(String(v).trim());
+    const toDate = v => {
+      if (v === '' || v == null) return null;
+      if (typeof v === 'number') { const d = new Date(Math.round((v - 25569) * 86400000)); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`; }
+      const s = String(v).trim(); let m;
+      if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s))) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+      if ((m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(s))) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      const mon = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+      if ((m = /^(\d{1,2})[-\s]([A-Za-z]{3})[A-Za-z]*[-\s,]+(\d{4})$/.exec(s)) && mon[m[2].toLowerCase()]) return `${m[3]}-${String(mon[m[2].toLowerCase()]).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      return undefined;
+    };
+    const rows = [];
+    grid.slice(1).forEach((r, idx) => {
+      const get = k => (col[k] === undefined ? '' : r[col[k]]);
+      const title = String(get('title') || '').trim();
+      if (!title) return;
+      const problems = [];
+      const deptTxt = String(get('dept') || '').trim();
+      const dept = deptTxt ? D().departments.find(d => d.name.toLowerCase() === deptTxt.toLowerCase()) : null;
+      if (deptTxt && !dept) problems.push(`department “${deptTxt}” not found`);
+      const apTxt = String(get('approver') || '').trim();
+      const approverId = !apTxt ? null : /^none$/i.test(apTxt) ? 'none' : person(apTxt, problems, 'approver');
+      const co = String(get('co') || '').split(/[\/,;]/).map(x => x.trim()).filter(Boolean).map(x => person(x, problems, 'co-owner')).filter(Boolean);
+      const due = toDate(get('due'));
+      if (due === undefined) problems.push(`due date “${get('due')}” not understood (use DD-MM-YYYY)`);
+      rows.push({
+        line: idx + 2, sl: parseInt(get('sl'), 10) || null, title,
+        scheduleRequired: yes(get('schedule')), module: String(get('module') || '').trim(), area: String(get('area') || '').trim(),
+        deptId: dept ? dept.id : null, ownerId: person(get('owner'), problems, 'owner'), coOwners: co,
+        assignerId: person(get('assigner'), problems, 'assigner'), approverId,
+        dueWd: parseInt(get('wd'), 10) || 5, due: due || null,
+        assign: col.assign === undefined || String(get('assign')).trim() === '' ? true : !no(get('assign')),
+        active: col.active === undefined || String(get('active')).trim() === '' ? true : !no(get('active')),
+        problems
+      });
+    });
+    if (!rows.length) throw new Error('No activities found in the file.');
+    return rows;
+  }
+
+  /* Activities tab: preview, then update the checklist. */
+  function uploadChecklist(me, file) {
+    readCloseFile(file).then(rows => {
+      const existing = T.closeItems();
+      const isNew = r => !existing.some(x => (r.sl && x.sl === r.sl) || x.title.toLowerCase() === r.title.toLowerCase());
+      const bad = rows.filter(r => r.problems.length), good = rows.filter(r => !r.problems.length);
+      U.modal('Upload close checklist', `<p>${rows.length} activit${rows.length === 1 ? 'y' : 'ies'} in the file: <b>${good.filter(isNew).length} new</b>, <b>${good.filter(r => !isNew(r)).length} to update</b>${bad.length ? `, <b style="color:var(--danger)">${bad.length} with problems</b>` : ''}.</p>
+        ${bad.length ? `<div class="alert warn"><b>These rows will be skipped until fixed:</b><br>${bad.slice(0, 25).map(r => `Row ${r.line} (${esc(r.title)}): ${esc(r.problems.join('; '))}`).join('<br>')}${bad.length > 25 ? `<br>…and ${bad.length - 25} more` : ''}</div>` : ''}
+        <p class="small muted">Activities are matched by Sl (or by name). Activities not in the file are left unchanged. Blank approver = owner’s reporting manager.</p>`,
+        `<button class="btn" data-close>Cancel</button><button class="btn primary" id="up-ok" ${good.length ? '' : 'disabled'}>Apply ${good.length} row(s)</button>`, m => {
+          $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+          $('#up-ok').onclick = () => U.act(() => T.api.importCloseItems(me, good.map(r => ({ sl: r.sl, title: r.title, scheduleRequired: r.scheduleRequired, module: r.module, area: r.area, deptId: r.deptId, ownerId: r.ownerId, coOwners: r.coOwners, assignerId: r.assignerId, approverId: r.approverId, dueWd: r.dueWd, active: r.active }))))
+            .then(res => { if (res) { U.closeLayer(); U.toast(`Checklist updated: ${res.added} added, ${res.updated} updated`); } });
+        });
+    }).catch(e => U.toast(e.message, true));
+  }
+
+  /* Plan tab: fill this month's rows from the file; the user reviews, then creates the tasks. */
+  function uploadPlan(me, file, v) {
+    readCloseFile(file).then(rows => {
+      const items = T.closeItems(); let filled = 0; const notes = [];
+      rows.forEach(r => {
+        const it = items.find(x => (r.sl && x.sl === r.sl) || x.title.toLowerCase() === r.title.toLowerCase());
+        const tr = it && $(`[data-plan="${it.id}"]`, v);
+        if (!tr) { notes.push(`Row ${r.line} (${r.title}): ${it ? 'already assigned this month or not yours' : 'not on the checklist — add it on the Activities tab first'}`); return; }
+        if (r.problems.length) notes.push(`Row ${r.line} (${r.title}): ${r.problems.join('; ')}`);
+        $('[data-pl-on]', tr).checked = r.assign;
+        if (r.ownerId) $('[data-pl-owner]', tr).value = r.ownerId;
+        const asg = $('[data-pl-asg]', tr); if (asg && r.assignerId) asg.value = r.assignerId;
+        const ap = $('[data-pl-appr]', tr);
+        if (r.approverId === 'none') { ap.value = ''; ap.dataset.auto = '0'; }
+        else if (r.approverId) { ap.value = r.approverId; ap.dataset.auto = '0'; }
+        else { ap.value = T.closeApprover({}, $('[data-pl-owner]', tr).value) || ''; ap.dataset.auto = '1'; }
+        if (r.coOwners.length || r.ownerId) { $$('[data-co-id]', tr).forEach(c => { c.checked = r.coOwners.includes(c.dataset.coId); }); const d = $('.co-pick', tr); if (d) d.dispatchEvent(new Event('change')); }
+        if (r.due) $('[data-pl-due]', tr).value = r.due;
+        filled++;
+      });
+      const box = $('#pl-upload-notes');
+      box.innerHTML = `<div class="alert ${notes.length ? 'warn' : 'info'}">Filled ${filled} activit${filled === 1 ? 'y' : 'ies'} from <b>${esc(file.name)}</b>. Check the table, then click <b>Create tasks</b>.${notes.length ? '<br>' + notes.slice(0, 20).map(esc).join('<br>') + (notes.length > 20 ? `<br>…and ${notes.length - 20} more` : '') : ''}</div>`;
+    }).catch(e => U.toast(e.message, true));
+  }
+
   /* Compact multi-person picker: shows the chosen names; opens a tick list. */
   function coPicker(selected, users) {
     const names = selected.map(T.userName);
@@ -871,7 +1050,7 @@
       <label class="field"><span>Due on working day (after month end)</span><input class="input" type="number" min="1" max="23" id="ci-wd" value="${i.dueWd || 5}"></label></div>
       <label class="field"><span>Assigner (assigns it each month and does the final review)</span><select class="input" id="ci-as"><option value="">— not set —</option>${users.filter(u => u.role !== 'employee').map(u => `<option value="${u.id}" ${i.assignerId === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label>
       <div class="grid2"><label class="field"><span>Default owner</span><select class="input" id="ci-o"><option value="">— none —</option>${users.map(u => `<option value="${u.id}" ${i.ownerId === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label>
-      <label class="field"><span>Approver (approves before submission)</span><select class="input" id="ci-ap"><option value="">— none —</option>${users.map(u => `<option value="${u.id}" ${i.approverId === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label></div>
+      <label class="field"><span>Approver (approves before submission)</span><select class="input" id="ci-ap"><option value="">Owner’s reporting manager (default)</option><option value="none" ${i.approverId === 'none' ? 'selected' : ''}>No approval needed</option>${users.map(u => `<option value="${u.id}" ${i.approverId === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label></div>
       <label class="field"><span>Default co-owners</span><div id="ci-co">${coPicker(i.coOwners || [], users)}</div></label>
       <label class="check"><input type="checkbox" id="ci-s" ${i.scheduleRequired ? 'checked' : ''}> Schedule required (must be attached before the task can be submitted)</label>
       ${id ? `<label class="check"><input type="checkbox" id="ci-act" ${i.active ? 'checked' : ''}> Active (on the checklist)</label>` : ''}`,

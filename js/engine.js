@@ -327,29 +327,24 @@
     /* Add or edit an activity on the month-end close checklist. */
     saveCloseItem(actor, input) {
       if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can change the month-end close checklist.');
-      need(input && String(input.title || '').trim().length >= 3, 'Activity name is required.');
-      const s = D().settings; s.closeItems = s.closeItems || [];
-      const okUser = id => id && T.user(id) && T.user(id).active;
-      const ownerId = okUser(input.ownerId) ? input.ownerId : null;
-      const item = {
-        title: String(input.title).trim().slice(0, 160), module: String(input.module || '').trim().slice(0, 40), area: String(input.area || '').trim().slice(0, 40),
-        scheduleRequired: !!input.scheduleRequired, ownerId,
-        coOwners: (Array.isArray(input.coOwners) ? input.coOwners : []).filter((id, i, a) => okUser(id) && id !== ownerId && a.indexOf(id) === i),
-        deptId: T.dept(input.deptId) ? input.deptId : null,
-        dueWd: Math.min(Math.max(parseInt(input.dueWd, 10) || 5, 1), 23),
-        approverId: okUser(input.approverId) && input.approverId !== ownerId ? input.approverId : null,
-        assignerId: okUser(input.assignerId) ? input.assignerId : null,
-        active: input.active !== false
-      };
-      if (input.id) {
-        const ex = s.closeItems.find(x => x.id === input.id); need(ex, 'Activity not found.');
-        Object.assign(ex, item);
-        audit(actor.id, 'close_checklist', null, `Close activity updated: ${ex.sl}. ${ex.title}`); commit(); return ex;
-      }
-      const n = s.closeItems.reduce((m, x) => Math.max(m, parseInt(String(x.id).slice(2), 10) || 0), 0) + 1;
-      Object.assign(item, { id: 'ci' + n, sl: s.closeItems.reduce((m, x) => Math.max(m, x.sl || 0), 0) + 1 });
-      s.closeItems.push(item);
-      audit(actor.id, 'close_checklist', null, `Close activity added: ${item.sl}. ${item.title}`); commit(); return item;
+      const { item, created } = T.upsertCloseItem(input);
+      audit(actor.id, 'close_checklist', null, `Close activity ${created ? 'added' : 'updated'}: ${item.sl}. ${item.title}`); commit(); return item;
+    },
+
+    /* Excel upload of the checklist: rows are matched to existing activities by Sl (or by name); new ones are added. */
+    importCloseItems(actor, rows) {
+      if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can change the month-end close checklist.');
+      need(Array.isArray(rows) && rows.length, 'The file has no activities.');
+      need(rows.length <= 300, 'Up to 300 activities per upload.');
+      rows.forEach((r, i) => need(r && String(r.title || '').trim().length >= 3, `Row ${i + 1}: activity name is required.`));
+      let added = 0, updated = 0;
+      rows.forEach(r => {
+        const ex = T.closeItems().find(x => (r.sl && x.sl === r.sl) || x.title.toLowerCase() === String(r.title).trim().toLowerCase());
+        const { created } = T.upsertCloseItem(Object.assign({}, r, { id: ex ? ex.id : undefined }));
+        if (created) added++; else updated++;
+      });
+      audit(actor.id, 'close_checklist', null, `Close checklist uploaded from Excel: ${added} added, ${updated} updated`); commit();
+      return { added, updated };
     },
 
     /* Create one month's close tasks with the owners, due dates and approvers chosen for that month.
@@ -388,7 +383,7 @@
           closeRef: { period, itemId: it.id, sl: it.sl }
         });
         ids.push(t.id);
-        if (saveDefaults) { it.ownerId = owner.id; it.coOwners = (r.coOwners || []).filter(id => id !== owner.id && T.user(id)); it.approverId = r.approverId || null; if (admin) it.assignerId = assigner; }
+        if (saveDefaults) { it.ownerId = owner.id; it.coOwners = (r.coOwners || []).filter(id => id !== owner.id && T.user(id)); it.approverId = !r.approverId ? 'none' : r.approverId === T.mgrOf(owner.id) ? null : r.approverId; if (admin) it.assignerId = assigner; }
       });
       audit(actor.id, 'close_planned', null, `Month-end close ${label}: ${ids.length} task(s) assigned${saveDefaults ? '; owners saved as defaults' : ''}`);
       commit();
@@ -768,6 +763,42 @@
   };
   /* ---------- month-end close helpers ---------- */
   T.closeItems = () => (D().settings.closeItems || []).slice().sort((a, b) => (a.sl || 0) - (b.sl || 0));
+  /* Add or update one close activity (validation only; callers audit and save). */
+  T.upsertCloseItem = function (input) {
+
+      need(input && String(input.title || '').trim().length >= 3, 'Activity name is required.');
+      const s = D().settings; s.closeItems = s.closeItems || [];
+      const okUser = id => id && T.user(id) && T.user(id).active;
+      const ownerId = okUser(input.ownerId) ? input.ownerId : null;
+      const item = {
+        title: String(input.title).trim().slice(0, 160), module: String(input.module || '').trim().slice(0, 40), area: String(input.area || '').trim().slice(0, 40),
+        scheduleRequired: !!input.scheduleRequired, ownerId,
+        coOwners: (Array.isArray(input.coOwners) ? input.coOwners : []).filter((id, i, a) => okUser(id) && id !== ownerId && a.indexOf(id) === i),
+        deptId: T.dept(input.deptId) ? input.deptId : null,
+        dueWd: Math.min(Math.max(parseInt(input.dueWd, 10) || 5, 1), 23),
+        approverId: input.approverId === 'none' ? 'none' : (okUser(input.approverId) && input.approverId !== ownerId ? input.approverId : null),
+        assignerId: okUser(input.assignerId) ? input.assignerId : null,
+        active: input.active !== false
+      };
+      if (input.id) {
+        const ex = s.closeItems.find(x => x.id === input.id); need(ex, 'Activity not found.');
+        Object.assign(ex, item);
+        return { item: ex, created: false };
+      }
+      const n = s.closeItems.reduce((m, x) => Math.max(m, parseInt(String(x.id).slice(2), 10) || 0), 0) + 1;
+      const wanted = parseInt(input.sl, 10);
+      const sl = wanted > 0 && !s.closeItems.some(x => x.sl === wanted) ? wanted : s.closeItems.reduce((m, x) => Math.max(m, x.sl || 0), 0) + 1;
+      Object.assign(item, { id: 'ci' + n, sl });
+      s.closeItems.push(item);
+      return { item, created: true };
+  };
+  /* Approver for an activity: its own choice, 'none' for no approval, otherwise the owner's reporting manager. */
+  T.closeApprover = (item, ownerId) => {
+    if (item && item.approverId === 'none') return null;
+    if (item && item.approverId && T.user(item.approverId)) return item.approverId;
+    const m = ownerId && T.user(T.mgrOf(ownerId));
+    return m && m.active && m.id !== ownerId ? m.id : null;
+  };
   T.closeTasks = period => D().tasks.filter(t => t.closeRef && t.closeRef.period === period && t.status !== 'cancelled');
   T.periodLabel = period => { const [y, m] = String(period).split('-').map(Number); return new Date(Date.UTC(y, m - 1, 15)).toLocaleString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' }); };
   /* The n-th working day (holidays and weekly offs skipped) of the month after `period` — when that month's close is due. */

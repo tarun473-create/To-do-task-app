@@ -390,6 +390,19 @@
   /* Overridden by js/remote.js in the server edition to upload the file itself. */
   U.uploadAttachment = (me, id, file) => T.api.addAttachment(me, id, { name: file.name, size: file.size });
 
+  /* SheetJS (Excel read/write), loaded only when someone uses an Excel template. */
+  U.loadXLSX = () => {
+    if (window.XLSX) return Promise.resolve(window.XLSX);
+    U._xlsx = U._xlsx || new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error('Excel library did not load.')));
+      s.onerror = () => { U._xlsx = null; reject(new Error('Could not load the Excel library. Check your internet connection and try again.')); };
+      document.head.appendChild(s);
+    });
+    return U._xlsx;
+  };
+
   /* ---------- export ---------- */
   U.taskRows = tasks => tasks.map(t => ({
     'Task ID': t.id, 'Title': t.title, 'Department': T.deptName(t.deptId), 'Category': t.category, 'Assignee': T.userName(t.ownerId),

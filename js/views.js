@@ -118,7 +118,7 @@
       const ot = due.length ? pct(due.filter(t => T.submittedOnTime(t)).length, due.length) : null;
       return { d, total: ts.length, ot, od: ts.filter(t => T.isOverdue(t)).length, sub: sub.length };
     });
-    const emps = T.visibleUsers(me).filter(u => u.role === 'employee').map(u => {
+    const emps = T.visibleUsers(me).filter(u => u.role === 'employee' || u.role === 'manager').map(u => {
       const ts = live.filter(t => t.ownerId === u.id && T.isOpen(t));
       return { u, open: ts.length, od: ts.filter(t => T.isOverdue(t)).length };
     }).sort((a, b) => b.open - a.open);
@@ -248,7 +248,7 @@
     const offset = +(f.month || 0);
     const range = T.monthRange(offset);
     const W = D().settings.kpiWeights;
-    const people = T.visibleUsers(me).filter(u => u.role === 'employee' && (!f.dept || u.deptId === f.dept));
+    const people = T.visibleUsers(me).filter(u => (u.role === 'employee' || u.role === 'manager') && (!f.dept || T.userDepts(u).includes(f.dept)));
     const rows = people.map(u => ({ u, k: T.computeKpi(u.id, range.from, range.to) })).sort((a, b) => (b.k.score ?? -1) - (a.k.score ?? -1));
     const sel = f.user ? T.user(f.user) : (me.role === 'employee' ? me : null);
     const months = [0, -1, -2, -3, -4, -5].map(o => ({ o, ...T.monthRange(o) }));
@@ -278,7 +278,7 @@
         ${detail}
         <div class="card span-8"><div class="card-head"><h2>Employee KPI scores — ${range.label}</h2><span class="small muted">Weights: ${T.KPI_PARAMS.map(p => `${p.label.split(' ')[0]} ${W[p.key]}%`).join(' · ')}</span></div>
           <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Dept</th><th>On-time</th><th>Completion</th><th>Quality</th><th>TAT</th><th>Response</th><th>KPI</th></tr></thead><tbody>
-          ${rows.map(({ u, k }) => `<tr class="click" data-user="${u.id}"><td>${U.avatar(u.id)}</td><td class="small">${esc(T.deptName(u.deptId))}</td>${T.KPI_PARAMS.map(p => `<td>${k.metrics[p.key].value == null ? '<span class="muted">n/a</span>' : k.metrics[p.key].value.toFixed(0) + '%'}</td>`).join('')}<td><b class="${k.band.cls}">${k.score == null ? '—' : k.score.toFixed(1) + '%'}</b><div class="small ${k.band.cls}">${k.band.label}</div></td></tr>`).join('') || '<tr><td colspan="8" class="empty">No employees in scope</td></tr>'}
+          ${rows.map(({ u, k }) => `<tr class="click" data-user="${u.id}"><td>${U.avatar(u.id)}</td><td class="small">${esc(T.deptNames(u))}</td>${T.KPI_PARAMS.map(p => `<td>${k.metrics[p.key].value == null ? '<span class="muted">n/a</span>' : k.metrics[p.key].value.toFixed(0) + '%'}</td>`).join('')}<td><b class="${k.band.cls}">${k.score == null ? '—' : k.score.toFixed(1) + '%'}</b><div class="small ${k.band.cls}">${k.band.label}</div></td></tr>`).join('') || '<tr><td colspan="8" class="empty">No employees in scope</td></tr>'}
           </tbody></table></div></div>
         <div class="card span-4"><div class="card-head"><h2>Interactive KPI calculator</h2></div>
           <div class="kpi-score" id="calc-score">—</div><div class="band" id="calc-band"></div>
@@ -299,7 +299,7 @@
     $$('[data-calc]', v).forEach(i => i.oninput = calc); calc();
     $('#calc-reset').onclick = () => { [90, 95, 85, 80, 90].forEach((x, i) => $(`[data-calc="${T.KPI_PARAMS[i].key}"]`).value = x); calc(); };
     $('#kpi-exp').onclick = () => U.exportExcel(`task360-kpi-${range.label.replace(' ', '-')}`, rows.map(({ u, k }) => ({
-      Employee: u.name, Department: T.deptName(u.deptId), Period: range.label,
+      Employee: u.name, Department: T.deptNames(u), Period: range.label,
       ...Object.fromEntries(T.KPI_PARAMS.map(p => [p.label + ' %', k.metrics[p.key].value == null ? 'n/a' : k.metrics[p.key].value.toFixed(1)])),
       'KPI score %': k.score == null ? '' : k.score.toFixed(1), Band: k.band.label, 'Tasks': k.counts.total, 'Overdue': k.counts.overdue
     })));
@@ -308,7 +308,7 @@
   /* ================= TEAM WORKLOAD ================= */
   V.team = (f, me) => {
     if (me.role === 'employee') return V.denied();
-    const people = T.visibleUsers(me).filter(u => u.role === 'employee');
+    const people = T.visibleUsers(me).filter(u => u.role === 'employee' || u.role === 'manager');
     const range = T.monthRange(0);
     const rows = people.map(u => {
       const ts = D().tasks.filter(t => t.ownerId === u.id && !t.archived);
@@ -318,7 +318,7 @@
     const admin = me.role === 'super_admin';
     const depts = T.visibleDepts(me).map(d => ({
       d, managers: D().users.filter(u => u.active && u.role === 'manager' && (u.teams || []).includes(d.id)),
-      members: D().users.filter(u => u.active && u.role === 'employee' && u.deptId === d.id).length,
+      members: D().users.filter(u => u.active && T.userDepts(u).includes(d.id)).length,
       open: D().tasks.filter(t => t.deptId === d.id && T.isOpen(t) && !t.archived).length
     }));
     $('#view').innerHTML = `<div class="page-head"><div><h1>Team management &amp; workload</h1><div class="sub">Check capacity before assigning · manage leave and backups${admin ? ' · add team members and departments' : ''}</div></div>
@@ -334,7 +334,7 @@
         ${D().users.filter(u => u.active).map(u => `<tr><td>${U.avatar(u.id)}</td><td class="small">${T.ROLES[u.role]}</td><td class="small">${esc(u.email || '—')}</td><td>${u.claudeId ? '<span class="pill s-completed">Signed in</span>' : '<span class="pill s-assigned">Not signed in yet</span>'}</td></tr>`).join('')}
       </tbody></table></div></div>` : ''}
       <div class="card" style="padding:0"><div class="card-head" style="padding:14px 16px 0"><h2>Team members &amp; workload</h2><span class="small muted">${rows.length} employee(s)</span></div><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Department</th><th>Manager</th><th>Active</th><th>Overdue</th><th>Critical</th><th>Due today</th><th>In review</th><th>KPI (${range.label})</th><th>Leave / backup</th><th></th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td>${U.avatar(r.u.id)}</td><td class="small">${esc(T.deptName(r.u.deptId))}</td><td class="small">${esc(T.userName(r.u.managerId))}</td>
+      ${rows.map(r => `<tr><td>${U.avatar(r.u.id)}<div class="small muted">${T.ROLES[r.u.role]}</div></td><td class="small">${esc(T.deptNames(r.u))}</td><td class="small">${esc(T.userName(r.u.managerId))}</td>
         <td><a href="${T.drill({ owner: r.u.id, preset: 'pending' })}"><b>${r.open}</b></a></td><td><a href="${T.drill({ owner: r.u.id, status: 'overdue' })}" style="color:var(--danger)"><b>${r.od}</b></a></td><td>${r.crit}</td><td>${r.today}</td><td>${r.review}</td>
         <td class="${r.k.band.cls}"><b>${r.k.score == null ? '—' : r.k.score.toFixed(0) + '%'}</b></td>
         <td class="small">${r.u.onLeave ? `🏖 On leave → ${esc(T.userName(r.u.backupId))}` : '<span class="muted">Available</span>'}</td>
@@ -352,7 +352,7 @@
     $$('[data-leave]', v).forEach(b => b.onclick = () => {
       const u = T.user(b.dataset.leave);
       if (u.onLeave) return U.act(() => T.api.setLeave(me, u.id, false), `${u.name} marked available`);
-      const opts = people.filter(p => p.id !== u.id && !p.onLeave).map(p => `<option value="${p.id}" ${p.deptId === u.deptId ? '' : ''}>${esc(p.name)} — ${esc(T.deptName(p.deptId))}</option>`).join('');
+      const opts = people.filter(p => p.id !== u.id && !p.onLeave).map(p => `<option value="${p.id}">${esc(p.name)} — ${esc(T.deptNames(p))}</option>`).join('');
       U.modal(`Mark ${u.name} on leave`, `<div class="alert info">Open tasks are temporarily handed to the backup. Ownership history is retained, and new tasks assigned to ${esc(u.name)} route to the backup automatically.</div>
         <label class="field"><span>Backup employee</span><select class="input" id="lv-b">${opts}</select></label>`, `<button class="btn" data-close>Cancel</button><button class="btn primary" id="lv-ok">Confirm</button>`, m => {
         $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
@@ -493,7 +493,7 @@
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const body = {
       users: `<div class="card" style="padding:0"><table><thead><tr><th>Name</th><th>Role</th><th>Department</th><th>Reports to</th><th>Email</th><th>Status</th><th></th></tr></thead><tbody>
-        ${D().users.map(u => `<tr><td>${U.avatar(u.id)}</td><td>${T.ROLES[u.role]}</td><td class="small">${u.role === 'manager' ? (u.teams || []).map(T.deptName).join(', ') : esc(T.deptName(u.deptId))}</td><td class="small">${esc(u.managerId ? T.userName(u.managerId) : '—')}</td><td class="small">${esc(u.email)}</td><td>${u.active ? '<span class="pill s-completed">Active</span>' : '<span class="pill s-cancelled">Inactive</span>'}</td><td><button class="btn sm" data-edit="${u.id}">Edit</button></td></tr>`).join('')}
+        ${D().users.map(u => `<tr><td>${U.avatar(u.id)}</td><td>${T.ROLES[u.role]}</td><td class="small">${esc(T.deptNames(u))}${u.role === 'manager' ? ' <span class="muted">(runs)</span>' : ''}</td><td class="small">${esc(u.managerId ? T.userName(u.managerId) : '—')}</td><td class="small">${esc(u.email)}</td><td>${u.active ? '<span class="pill s-completed">Active</span>' : '<span class="pill s-cancelled">Inactive</span>'}</td><td><button class="btn sm" data-edit="${u.id}">Edit</button></td></tr>`).join('')}
         </tbody></table></div><div style="margin-top:10px;display:flex;gap:8px"><button class="btn primary" data-edit="">＋ Add team member</button><button class="btn" id="nd-add">＋ Add department</button></div>`,
       kpi: `<div class="card" style="max-width:640px"><h2>KPI weightage</h2><p class="small muted">Must total 100%. Changes apply to all KPI calculations immediately and are audited.</p>
         ${T.KPI_PARAMS.map(p => `<div class="slider-row"><span>${p.label}</span><input type="number" class="input" min="0" max="100" data-w="${p.key}" value="${s.kpiWeights[p.key]}"><span>%</span></div>`).join('')}
@@ -612,21 +612,23 @@
     const depts = D().departments;
     const deptMgr = d => (D().users.find(x => x.active && x.role === 'manager' && (x.teams || []).includes(d)) || {}).id || '';
     const startDept = presetDept || (depts[0] && depts[0].id) || null;
-    const u = id ? T.user(id) : { name: (preset && preset.name) || '', role: 'employee', deptId: startDept, managerId: deptMgr(startDept), email: (preset && preset.email) || '', teams: [] };
+    const u = id ? T.user(id) : { name: (preset && preset.name) || '', role: 'employee', deptId: startDept, depts: startDept && presetDept ? [startDept] : [], managerId: presetDept ? deptMgr(startDept) : '', email: (preset && preset.email) || '', teams: [] };
+    const self = id && id === me.id;
+    const mine = T.userDepts(u);
     let claudeId = (preset && preset.claudeId) || null;
     const mgrs = D().users.filter(x => x.role !== 'employee' && x.id !== id && x.active);
     U.modal(id ? 'Edit team member' : 'Add team member', `${!id && T.isShared() ? `<label class="field"><span>Find a colleague in your organization</span><input class="input" id="eu-find" placeholder="Type a name or email" autocomplete="off"></label><div id="eu-hits" class="small" style="margin:-6px 0 10px"></div>` : ''}<label class="field"><span>Full name *</span><input class="input" id="eu-n" value="${esc(u.name)}"></label>
       <label class="field"><span>Work email${T.isServer() || T.isShared() ? ' * (the email they sign in with)' : ''}</span><input class="input" id="eu-e" type="email" value="${esc(u.email)}" placeholder="name@company.com"></label>
-      <div class="grid2"><label class="field"><span>Role</span><select class="input" id="eu-r">${Object.entries(T.ROLES).map(([k, l]) => `<option value="${k}" ${u.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="field"><span>Home department</span><select class="input" id="eu-d"><option value="">— none —</option>${depts.map(d => `<option value="${d.id}" ${u.deptId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label></div>
+      <label class="field"><span>Role</span><select class="input" id="eu-r" ${self ? 'disabled title="You cannot change your own role"' : ''}>${Object.entries(T.ROLES).map(([k, l]) => `<option value="${k}" ${u.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select>${self ? '<span class="small muted">You cannot change your own role.</span>' : ''}</label>
+      <label class="field"><span>Departments (tick all that apply)</span><div style="display:flex;gap:4px 14px;flex-wrap:wrap">${depts.map(d => `<label class="check" style="margin:0"><input type="checkbox" data-dept="${d.id}" ${mine.includes(d.id) ? 'checked' : ''}> ${esc(d.name)}</label>`).join('')}</div><span class="small muted" id="eu-dept-hint"></span></label>
       <label class="field"><span>Reports to</span><select class="input" id="eu-m"><option value="">— none —</option>${mgrs.map(m => `<option value="${m.id}" ${u.managerId === m.id ? 'selected' : ''}>${esc(m.name)} (${T.ROLES[m.role]})</option>`).join('')}</select></label>
-      <label class="field" id="eu-teams-f"><span>Departments this manager runs</span><div style="display:flex;gap:10px;flex-wrap:wrap">${depts.map(d => `<label class="check"><input type="checkbox" data-team="${d.id}" ${(u.teams || []).includes(d.id) ? 'checked' : ''}> ${esc(d.name)}</label>`).join('')}</div></label>
-      ${id ? `<label class="check"><input type="checkbox" id="eu-a" ${u.active ? 'checked' : ''}> Active</label>` : ''}`,
+      ${id && !self ? `<label class="check"><input type="checkbox" id="eu-a" ${u.active ? 'checked' : ''}> Active</label>` : ''}`,
       `<button class="btn" data-close>Cancel</button><button class="btn primary" id="eu-ok">Save</button>`, m => {
         $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
-        const syncRole = () => $('#eu-teams-f').classList.toggle('hidden', $('#eu-r').value !== 'manager');
+        const hint = { employee: 'Sees and works on tasks assigned to them.', manager: 'A Reporting Manager assigns, reviews and approves tasks in every department ticked.', dept_head: 'Sees all departments.', super_admin: 'Sees all departments and manages people, departments and settings.' };
+        const syncRole = () => { $('#eu-dept-hint').textContent = hint[$('#eu-r').value] || ''; };
         $('#eu-r').onchange = syncRole; syncRole();
-        if (!id) $('#eu-d').onchange = () => { const mg = deptMgr($('#eu-d').value); if (mg) $('#eu-m').value = mg; };
+        if (!id) $$('[data-dept]', m).forEach(c => c.onchange = () => { if (!$('#eu-m').value && c.checked) { const mg = deptMgr(c.dataset.dept); if (mg) $('#eu-m').value = mg; } });
         const find = $('#eu-find');
         if (find) {
           const show = hits => {
@@ -638,11 +640,11 @@
           find.oninput = () => T.shared.search(find.value).then(show);
         }
         $('#eu-ok').onclick = () => {
-          const rec = { id: id || undefined, name: $('#eu-n').value.trim(), email: $('#eu-e').value.trim(), role: $('#eu-r').value, deptId: $('#eu-d').value || null, managerId: $('#eu-m').value || null, teams: $$('[data-team]', m).filter(i => i.checked).map(i => i.dataset.team) };
-          if (id) rec.active = $('#eu-a').checked;
+          const picked = $$('[data-dept]', m).filter(i => i.checked).map(i => i.dataset.dept);
+          const rec = { id: id || undefined, name: $('#eu-n').value.trim(), email: $('#eu-e').value.trim(), role: $('#eu-r').value, depts: picked, deptId: picked[0] || null, managerId: $('#eu-m').value || null, teams: [] };
+          if (id) rec.active = self ? true : $('#eu-a').checked;
           if (!id && (T.isServer() || T.isShared()) && !rec.email) return U.toast('Email is required — the person signs in with it.', true);
           if (!id && claudeId) rec.claudeId = claudeId;
-          if (rec.role !== 'manager') rec.teams = [];
           U.act(() => T.api.saveUser(me, rec), id ? 'Team member updated' : `${rec.name} added to the team`).then(ok => {
             if (!ok) return;
             U.closeLayer(); T.app.renderUserSwitch();
@@ -659,7 +661,7 @@
     const vis = T.visibleTasks(me).filter(t => !t.archived && t.status !== 'cancelled');
     const open = vis.filter(T.isOpen);
     const line = t => `• ${t.id} ${t.title} — ${T.userName(t.ownerId)}, due ${T.fmt(t.dueAt)}${T.isOverdue(t) ? ` (OVERDUE ${T.overdueDays(t)}d)` : ''}`;
-    const emps = T.visibleUsers(me).filter(u => u.role === 'employee');
+    const emps = T.visibleUsers(me).filter(u => u.role === 'employee' || u.role === 'manager');
     if (/attention|today|focus|priorit/.test(s)) {
       const od = open.filter(t => T.isOverdue(t)).sort((a, b) => a.dueAt - b.dueAt), today = open.filter(t => T.dueToday(t) && !T.isOverdue(t)), rev = open.filter(t => t.status === 'pending_review' && t.ownerId !== me.id), crit = open.filter(t => t.priority === 'critical' && !T.isOverdue(t));
       return `Here is what needs your attention:\n\n🔴 Overdue (${od.length}):\n${od.slice(0, 6).map(line).join('\n') || '  none'}\n\n🟠 Due today (${today.length}):\n${today.slice(0, 6).map(line).join('\n') || '  none'}\n\n🟣 Awaiting your approval (${rev.length}):\n${rev.slice(0, 5).map(line).join('\n') || '  none'}\n\n⚡ Other critical open (${crit.length}):\n${crit.slice(0, 4).map(line).join('\n') || '  none'}\n\nRecommendation: clear approvals first (they unblock KPI credit), then chase the oldest overdue items.`;

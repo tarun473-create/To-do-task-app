@@ -41,7 +41,7 @@ try {
   await sql.begin(async tx => {
     await tx`insert into task360.app_settings (id, doc, demo) values (1, ${tx.json(data.settings)}, ${data.demo}) on conflict (id) do update set doc = excluded.doc, demo = excluded.demo`;
     for (const x of data.departments) await tx`insert into task360.departments (id, name, color) values (${x.id}, ${x.name}, ${x.color})`;
-    for (const u of data.users) await tx`insert into task360.users (id, email, name, role, dept_id, teams, active) values (${u.id}, ${u.email || null}, ${u.name}, ${u.role}, ${u.deptId}, ${u.teams || []}, true)`;
+    for (const u of data.users) await tx`insert into task360.users (id, email, name, role, dept_id, depts, teams, active) values (${u.id}, ${u.email || null}, ${u.name}, ${u.role}, ${u.deptId}, ${u.depts || (u.deptId ? [u.deptId] : [])}, ${u.teams || []}, true)`;
     for (const u of data.users) if (u.managerId) await tx`update task360.users set manager_id = ${u.managerId} where id = ${u.id}`;
     for (const t of data.tasks) {
       await tx`insert into task360.tasks (id, dept_id, owner_id, created_by, status, priority, due_at, original_due_at, kpi_due_at, archived, demo, doc, created_at)

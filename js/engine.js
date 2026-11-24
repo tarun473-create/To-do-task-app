@@ -85,7 +85,11 @@
   T.blockedBy = t => (t.dependsOn || []).map(T.task).filter(x => x && T.isOpen(x));
 
   /* ---------------- permissions (enforced in every API call) ---------------- */
-  T.managerTeams = u => u.role === 'manager' ? (u.teams || [u.deptId]) : [];
+  /* A person can belong to several departments (u.depts); deptId is kept as their first one. */
+  T.userDepts = u => (u && Array.isArray(u.depts) && u.depts.length) ? u.depts : (u && u.deptId ? [u.deptId] : []);
+  T.deptNames = u => T.userDepts(u).map(T.deptName).join(', ') || '—';
+  /* A Reporting Manager runs the departments they are in (or an explicit list in u.teams). */
+  T.managerTeams = u => u.role === 'manager' ? ((Array.isArray(u.teams) && u.teams.length) ? u.teams : T.userDepts(u)) : [];
   T.canSeeAll = u => u.role === 'super_admin' || u.role === 'dept_head';
   T.reportsTo = (emp, mgr) => emp && emp.managerId === mgr.id;
   T.canView = (u, t) => {
@@ -118,14 +122,15 @@
   T.visibleTasks = u => D().tasks.filter(t => T.canView(u, t));
   T.visibleUsers = u => {
     if (T.canSeeAll(u)) return D().users.filter(x => x.active);
-    if (u.role === 'manager') return D().users.filter(x => x.active && (x.id === u.id || x.managerId === u.id || (x.role === 'employee' && T.managerTeams(u).includes(x.deptId))));
+    if (u.role === 'manager') { const mine = T.managerTeams(u); return D().users.filter(x => x.active && (x.id === u.id || x.managerId === u.id || (x.role === 'employee' && T.userDepts(x).some(d => mine.includes(d))))); }
     return [u];
   };
-  T.assignableUsers = u => T.visibleUsers(u).filter(x => x.role === 'employee' || (T.canSeeAll(u) && x.role === 'manager'));
+  /* Super Admin / Department Head: anyone. Reporting Manager: employees in their departments and managers who report to them. */
+  T.assignableUsers = u => T.visibleUsers(u).filter(x => T.canSeeAll(u) || x.role === 'employee' || (x.role === 'manager' && x.managerId === u.id));
   T.visibleDepts = u => {
     if (T.canSeeAll(u)) return D().departments;
     if (u.role === 'manager') return D().departments.filter(d => T.managerTeams(u).includes(d.id));
-    return D().departments.filter(d => d.id === u.deptId);
+    return D().departments.filter(d => T.userDepts(u).includes(d.id));
   };
 
   function deny(msg) { const e = new Error(msg || 'You are not authorised to perform this action.'); e.code = 403; throw e; }
@@ -513,10 +518,20 @@
       need(T.ROLES[u.role], 'Invalid role.');
       if (T.isServer() || T.isShared()) need(u.email && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(u.email), 'A valid work email is required — it is used to sign in.');
       const claudeId = typeof u.claudeId === 'string' && u.claudeId.length < 120 ? u.claudeId : null;
+      const existing = u.id ? T.user(u.id) : null;
+      if (existing && existing.id === actor.id) {
+        need(u.role === existing.role, 'You cannot change your own role. Ask another Super Admin to do it.');
+        need(u.active !== false, 'You cannot deactivate your own account.');
+      }
+      if (existing && existing.role === 'super_admin' && (u.role !== 'super_admin' || u.active === false))
+        need(D().users.some(x => x.id !== existing.id && x.active && x.role === 'super_admin'), 'Task360 needs at least one active Super Admin.');
+      const depts = (Array.isArray(u.depts) ? u.depts : (u.deptId ? [u.deptId] : [])).filter((id, i, a) => T.dept(id) && a.indexOf(id) === i);
+      const teams = (Array.isArray(u.teams) ? u.teams : []).filter((id, i, a) => T.dept(id) && a.indexOf(id) === i);
+      if (u.managerId) need(T.user(u.managerId) && u.managerId !== u.id, 'Select a valid reporting manager.');
       const d = D();
       if (u.email) need(!d.users.some(x => x.id !== u.id && x.email && x.email.toLowerCase() === u.email.toLowerCase()), 'Another user already has this email.');
       if (u.id) need(T.user(u.id), 'User not found.');
-      u = { id: u.id, name: u.name.trim(), email: (u.email || '').trim(), role: u.role, deptId: u.deptId || null, managerId: u.managerId || null, teams: Array.isArray(u.teams) ? u.teams : [], ...(u.id ? { active: u.active !== false } : {}), ...(claudeId ? { claudeId } : {}) };
+      u = { id: u.id, name: u.name.trim(), email: (u.email || '').trim().toLowerCase(), role: u.role, deptId: depts[0] || null, depts, managerId: u.managerId || null, teams: u.role === 'manager' ? teams : [], ...(u.id ? { active: u.active !== false } : {}), ...(claudeId ? { claudeId } : {}) };
       if (u.id) { const ex = T.user(u.id); Object.assign(ex, u); audit(actor.id, 'user', null, `User updated: ${u.name}`); }
       else { u.id = 'u' + (Math.max(...d.users.map(x => +x.id.slice(1))) + 1); u.active = true; u.onLeave = false; d.users.push(u); audit(actor.id, 'user', null, `User created: ${u.name} (${T.ROLES[u.role]})`); }
       commit(); return u;
@@ -533,7 +548,7 @@
       const palette = ['#7c3aed', '#0d9488', '#ea580c', '#2563eb', '#be123c', '#65a30d'];
       const dept = { id, name: name.slice(0, 80), color: palette[d.departments.length % palette.length] };
       d.departments.push(dept);
-      if (mgr) mgr.teams = [...new Set([...(mgr.teams || []), id])];
+      if (mgr) { mgr.depts = [...new Set([...T.userDepts(mgr), id])]; mgr.deptId = mgr.deptId || id; if (mgr.teams && mgr.teams.length) mgr.teams = [...new Set([...mgr.teams, id])]; }
       audit(actor.id, 'department', null, `Department created: ${dept.name}${mgr ? ` (managed by ${mgr.name})` : ''}`); commit();
       return dept;
     },

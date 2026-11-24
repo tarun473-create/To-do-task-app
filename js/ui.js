@@ -211,10 +211,10 @@
       $$('[data-close]', m).forEach(b => b.onclick = U.closeLayer);
       const fillOwners = () => {
         const dept = $('#ct-dept').value;
-        const list = users.filter(u => u.deptId === dept || (u.role === 'employee' && false));
+        const list = users.filter(u => T.userDepts(u).includes(dept));
         const rest = users.filter(u => !list.includes(u));
         $('#ct-owner').innerHTML = list.map(u => `<option value="${u.id}">${esc(u.name)}${u.onLeave ? ' (on leave)' : ''}</option>`).join('') +
-          (rest.length ? `<optgroup label="Other teams">${rest.map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(T.deptName(u.deptId))}</option>`).join('')}</optgroup>` : '');
+          (rest.length ? `<optgroup label="Other teams">${rest.map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(T.deptNames(u))}</option>`).join('')}</optgroup>` : '');
         if (preset.ownerId) $('#ct-owner').value = preset.ownerId;
         $('#ct-hint').innerHTML = U.workloadHint($('#ct-owner').value);
       };
@@ -366,7 +366,7 @@
         }),
       reopen: () => U.reasonPrompt('Reopen task', 'What needs correction?', '', r => { U.act(() => T.api.reopen(me, id, r), 'Task reopened').then(ok => { if (ok) reopenDrawer(); }) }),
       reassign: () => {
-        const opts = T.assignableUsers(me).filter(u => u.id !== t.ownerId).map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(T.deptName(u.deptId))}</option>`).join('');
+        const opts = T.assignableUsers(me).filter(u => u.id !== t.ownerId).map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(T.deptNames(u))}</option>`).join('');
         U.reasonPrompt('Reassign task', 'Reason for reassignment', `<label class="field"><span>New assignee *</span><select class="input" id="ra-user">${opts}</select></label><div id="ra-hint"></div>
           <label class="field"><span>Cause</span><select class="input" id="ra-cause"><option value="workload">Workload balancing</option><option value="skill">Skill / expertise</option><option value="leave">Leave / absence</option><option value="performance">Performance</option><option value="scope">Scope change</option></select></label>`,
           r => { U.act(() => T.api.reassign(me, id, $('#ra-user').value, r, $('#ra-cause').value), 'Task reassigned; both assignees notified').then(ok => { if (ok) reopenDrawer(); }) });

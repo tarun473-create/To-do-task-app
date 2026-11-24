@@ -8,7 +8,7 @@ export class ConflictError extends Error { constructor(m = 'Data changed concurr
 
 const ms = (v: any) => (v == null ? null : new Date(Number(v)));
 const toUser = (r: any) => ({
-  id: r.id, name: r.name, role: r.role, deptId: r.dept_id, managerId: r.manager_id, teams: r.teams || [],
+  id: r.id, name: r.name, role: r.role, deptId: r.dept_id, depts: r.depts && r.depts.length ? r.depts : (r.dept_id ? [r.dept_id] : []), managerId: r.manager_id, teams: r.teams || [],
   email: r.email || '', active: r.active, onLeave: r.on_leave, backupId: r.backup_id
 });
 
@@ -77,7 +77,7 @@ export async function persist(before: Loaded, after: Dataset, sql: Sql = db()): 
     }
     for (const u of changedUsers) {
       await tx`update task360.users set email = ${u.email || null}, name = ${u.name}, role = ${u.role}, dept_id = ${u.deptId || null},
-        manager_id = ${u.managerId || null}, teams = ${u.teams || []}, active = ${u.active !== false}, on_leave = ${!!u.onLeave},
+        manager_id = ${u.managerId || null}, teams = ${u.teams || []}, depts = ${u.depts || []}, active = ${u.active !== false}, on_leave = ${!!u.onLeave},
         backup_id = ${u.backupId || null}, updated_at = now() where id = ${u.id}`;
     }
     // tasks

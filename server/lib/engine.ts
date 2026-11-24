@@ -77,7 +77,7 @@ export function scopeFor(data: Dataset, actorId: string): Scope {
     var ids = {}; tasks.forEach(function (t) { ids[t.id] = 1; });
     var admin = me.role === 'super_admin';
     var users = d.users.map(function (u) {
-      return { id: u.id, name: u.name, role: u.role, deptId: u.deptId, managerId: u.managerId, teams: u.teams || [],
+      return { id: u.id, name: u.name, role: u.role, deptId: u.deptId, depts: u.depts || [], managerId: u.managerId, teams: u.teams || [],
         active: u.active, onLeave: u.onLeave, backupId: u.backupId, email: (admin || u.id === me.id) ? (u.email || '') : '' };
     });
     var sentKeys = {};

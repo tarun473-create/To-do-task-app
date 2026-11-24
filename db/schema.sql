@@ -50,6 +50,9 @@ create table if not exists task360.users (
   updated_at  timestamptz not null default now()
 );
 
+-- People can belong to several departments (added after the first release; safe to re-run)
+alter table task360.users add column if not exists depts text[] not null default '{}';
+
 -- ---------- tasks ----------
 create table if not exists task360.tasks (
   id               text primary key check (id ~ '^T360-[0-9]{4,}$'),

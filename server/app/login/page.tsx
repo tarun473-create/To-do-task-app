@@ -23,14 +23,19 @@ export default async function Login({ searchParams }: { searchParams: Promise<Re
         <div><b style={{ fontSize: 17 }}>Task360</b><div className="small muted">Team Performance &amp; Accountability Hub</div></div>
       </div>
       {msg && <div className={`alert ${msg.cls}`}>{msg.text}</div>}
-      <form method="post" action="/auth/password">
+      {env.microsoftSso && (
+        <>
+          <a className="btn primary" href="/auth/microsoft" style={{ width: '100%', justifyContent: 'center', padding: '11px 12px' }}>Sign in with Microsoft</a>
+          <p className="small muted" style={{ textAlign: 'center', margin: '8px 0 14px' }}>Use your work account — the same login as Outlook and Teams.</p>
+        </>
+      )}
+      <details open={!env.microsoftSso}><summary className="small muted" style={{ cursor: 'pointer', display: env.microsoftSso ? undefined : 'none' }}>Sign in with email and password instead</summary>
+      <form method="post" action="/auth/password" style={{ marginTop: env.microsoftSso ? 10 : 0 }}>
         <label className="field"><span>Work email</span><input className="input" type="email" name="email" required autoComplete="username" placeholder="name@company.com" /></label>
         <label className="field"><span>Password</span><input className="input" type="password" name="password" required autoComplete="current-password" /></label>
-        <button className="btn primary" type="submit" style={{ width: '100%', justifyContent: 'center' }}>Sign in</button>
+        <button className={`btn ${env.microsoftSso ? '' : 'primary'}`} type="submit" style={{ width: '100%', justifyContent: 'center' }}>Sign in</button>
       </form>
-      {env.microsoftSso && (
-        <a className="btn" href="/auth/microsoft" style={{ width: '100%', justifyContent: 'center', marginTop: 10 }}>Sign in with Microsoft</a>
-      )}
+      </details>
       <details style={{ marginTop: 12 }}><summary className="small muted" style={{ cursor: 'pointer' }}>No password yet? Get a sign-in link by email</summary>
         <form method="post" action="/auth/otp" style={{ marginTop: 8 }}>
           <label className="field"><span>Work email</span><input className="input" type="email" name="email" required autoComplete="email" placeholder="name@company.com" /></label>

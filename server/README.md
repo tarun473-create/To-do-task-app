@@ -33,7 +33,15 @@ You'll also need [Node.js 20+](https://nodejs.org) on your computer, once, to cr
 3. Under **Project settings → API**, copy the **Project URL** (`NEXT_PUBLIC_SUPABASE_URL`), the **anon public** key (`NEXT_PUBLIC_SUPABASE_ANON_KEY`) and the **service_role** key (`SUPABASE_SERVICE_ROLE_KEY`). Keep the service_role key secret.
 4. Under **Storage → New bucket**, name it `task-attachments` and leave **Public** switched **off**.
 
-## Step 2: Create the tables and your admin account (run once, from your computer)
+## Step 2 (easiest): set up from the browser
+
+No software on your computer is needed. Do Step 4 (deploy) with an extra setting **`SETUP_TOKEN`** (any secret code of 16+ characters). Then:
+1. In the current Task360 (Claude team page), open **Admin Settings → Data → Download a copy (JSON)**.
+2. Open `https://<your app>/setup`, enter the setup code, choose the file, and click **Create tables and load my data**.
+   Or open **Or start with an empty workspace** to begin with just yourself as Super Admin.
+3. The page then switches itself off. You can remove `SETUP_TOKEN` from the settings.
+
+## Step 2 (alternative): command line — create the tables and your admin account from your computer
 
 ```bash
 git clone https://github.com/tarun473-create/To-do-task-app.git

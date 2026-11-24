@@ -10,6 +10,8 @@ export const env = {
   storageBucket: process.env.STORAGE_BUCKET || 'task-attachments',
   microsoftSso: bool(process.env.MICROSOFT_SSO_ENABLED),
   cronSecret: process.env.CRON_SECRET || '',
+  // One-time browser setup (/setup). Remove after setup; the page also refuses once people exist.
+  setupToken: process.env.SETUP_TOKEN || '',
   // Microsoft Graph (Outlook mail) — app registration with Mail.Send application permission
   msTenantId: process.env.MS_TENANT_ID || '',
   msClientId: process.env.MS_CLIENT_ID || '',

@@ -4,7 +4,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 
-const PUBLIC = [/^\/login/, /^\/auth\//, /^\/api\/health/, /^\/api\/cron/, /^\/app\//, /^\/favicon/];
+const PUBLIC = [/^\/login/, /^\/auth\//, /^\/api\/health/, /^\/api\/cron/, /^\/app\//, /^\/favicon/, /^\/setup$/, /^\/api\/setup$/];
 const devLogin = (process.env.DEV_LOGIN === 'true' || process.env.DEV_LOGIN === '1') && process.env.NODE_ENV !== 'production';
 
 export async function middleware(req: NextRequest) {

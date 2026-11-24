@@ -210,11 +210,13 @@
       let finalOwner = owner, backupNote = '';
       if (owner.onLeave && owner.backupId) { finalOwner = T.user(owner.backupId); backupNote = ` (backup for ${owner.name}, on leave)`; }
       const approvals = T.cleanApprovals(input.approvals, finalOwner.id);
+      const onBehalf = input.assignedBy && input.assignedBy !== actor.id && T.canSeeAll(actor) && T.user(input.assignedBy) && T.user(input.assignedBy).active ? input.assignedBy : null;
+      const assigner = onBehalf || actor.id;
       const t = {
         id: 'T360-' + String(d.seq++).padStart(4, '0'),
         title: input.title.trim(), description: (input.description || '').trim(),
         deptId: input.deptId || finalOwner.deptId, category: input.category || 'Ad hoc', priority: pr.id,
-        ownerId: finalOwner.id, createdBy: actor.id, reviewerId: input.reviewerId || actor.id,
+        ownerId: finalOwner.id, createdBy: assigner, reviewerId: (input.reviewerId && T.user(input.reviewerId) ? input.reviewerId : assigner),
         collaborators: (Array.isArray(input.collaborators) ? input.collaborators : []).filter((id, i, a) => id !== finalOwner.id && T.user(id) && T.user(id).active && a.indexOf(id) === i),
         createdAt: at, assignedAt: at, startDate: input.startDate || T.istDateStr(at),
         dueAt: input.dueAt, originalDueAt: input.dueAt, kpiDueAt: input.dueAt,
@@ -233,7 +235,7 @@
         closeRef: input.closeRef && /^\d{4}-\d{2}$/.test(input.closeRef.period || '') ? { period: input.closeRef.period, itemId: String(input.closeRef.itemId || ''), sl: input.closeRef.sl || null } : null
       };
       d.tasks.push(t);
-      audit(actor.id, 'created', t, `Task created and assigned to ${finalOwner.name}${backupNote}; due ${T.fmt(t.dueAt)}` +
+      audit(actor.id, 'created', t, `Task ${onBehalf ? `created by ${actor.name} on behalf of ${T.userName(onBehalf)} and ` : ''}assigned to ${finalOwner.name}${backupNote}; due ${T.fmt(t.dueAt)}` +
         (approvals.length ? `; approval before submission: ${approvals.map(a => `${a.label} (${T.userName(a.approverId)})`).join(' → ')}` : ''));
       notify('assigned', t, [finalOwner.id, ...t.collaborators], `New task assigned: ${t.title} — due ${T.fmt(t.dueAt)}`, `${t.id}:assigned`);
       commit();
@@ -336,6 +338,7 @@
         deptId: T.dept(input.deptId) ? input.deptId : null,
         dueWd: Math.min(Math.max(parseInt(input.dueWd, 10) || 5, 1), 23),
         approverId: okUser(input.approverId) && input.approverId !== ownerId ? input.approverId : null,
+        assignerId: okUser(input.assignerId) ? input.assignerId : null,
         active: input.active !== false
       };
       if (input.id) {
@@ -352,12 +355,18 @@
     /* Create one month's close tasks with the owners, due dates and approvers chosen for that month.
        rows: [{ itemId, ownerId, coOwners, dueAt, approverId }]. Activities already created for the month are skipped. */
     planClose(actor, period, rows, saveDefaults) {
-      if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can assign the month-end close.');
+      const admin = T.canSeeAll(actor);
       need(/^\d{4}-(0[1-9]|1[0-2])$/.test(period || ''), 'Choose a valid close month.');
       need(Array.isArray(rows) && rows.length, 'Tick at least one activity.');
       const done = new Set(T.closeTasks(period).map(t => t.closeRef.itemId));
       const pairs = rows.filter(r => r && !done.has(r.itemId)).map(r => { const it = T.closeItems().find(x => x.id === r.itemId); need(it, 'Unknown close activity.'); return [it, r]; });
       need(pairs.length, 'The ticked activities already have tasks for this month.');
+      // A Reporting Manager may assign only the activities where they are the assigner.
+      if (!admin) {
+        const notMine = pairs.filter(([it]) => it.assignerId !== actor.id).map(([it]) => `${it.sl}. ${it.title}`);
+        if (notMine.length) deny(`You are not the assigner for: ${notMine.slice(0, 4).join('; ')}.`);
+        pairs.forEach(([, r]) => { r.assignerId = actor.id; });
+      }
       const missing = pairs.filter(([, r]) => !r.ownerId || !T.user(r.ownerId) || !T.user(r.ownerId).active).map(([it]) => `${it.sl}. ${it.title}`);
       need(!missing.length, `Choose an owner for: ${missing.slice(0, 4).join('; ')}${missing.length > 4 ? ` and ${missing.length - 4} more` : ''}.`);
       const noDate = pairs.filter(([, r]) => !Number.isFinite(r.dueAt)).map(([it]) => `${it.sl}. ${it.title}`);
@@ -367,18 +376,19 @@
       const label = T.periodLabel(period), ids = [];
       pairs.forEach(([it, r]) => {
         const owner = T.user(r.ownerId);
+        const assigner = r.assignerId && T.user(r.assignerId) && T.user(r.assignerId).active ? r.assignerId : (it.assignerId || actor.id);
         const t = T.api.createTask(actor, {
-          title: `${it.title} — ${label} close`,
+          title: `${it.title} — ${label} close`, assignedBy: assigner, reviewerId: assigner,
           description: `Month-end close for ${label} · Activity ${it.sl}${it.module ? ` · ${it.module}` : ''}${it.area ? ` / ${it.area}` : ''}${it.scheduleRequired ? ' · Schedule required: attach the schedule before submitting.' : ''}`,
           deptId: it.deptId || T.userDepts(owner)[0] || (D().departments[0] || {}).id, category: 'Month-end close', priority: 'high',
           ownerId: owner.id, collaborators: r.coOwners || [], dueAt: r.dueAt, expectedTatHrs: 48,
-          approvals: r.approverId && r.approverId !== owner.id ? [{ label: 'Close review', approverId: r.approverId }] : [],
+          approvals: r.approverId && r.approverId !== owner.id ? [{ label: 'Approval', approverId: r.approverId }] : [],
           checklist: it.scheduleRequired ? ['Prepare the schedule', 'Reconcile the schedule with the GL', 'Attach the schedule to this task'] : [],
           module: [it.module, it.area].filter(Boolean).join(' · '), scheduleRequired: it.scheduleRequired,
           closeRef: { period, itemId: it.id, sl: it.sl }
         });
         ids.push(t.id);
-        if (saveDefaults) { it.ownerId = owner.id; it.coOwners = (r.coOwners || []).filter(id => id !== owner.id && T.user(id)); it.approverId = r.approverId || null; }
+        if (saveDefaults) { it.ownerId = owner.id; it.coOwners = (r.coOwners || []).filter(id => id !== owner.id && T.user(id)); it.approverId = r.approverId || null; if (admin) it.assignerId = assigner; }
       });
       audit(actor.id, 'close_planned', null, `Month-end close ${label}: ${ids.length} task(s) assigned${saveDefaults ? '; owners saved as defaults' : ''}`);
       commit();

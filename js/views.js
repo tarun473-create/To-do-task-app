@@ -18,15 +18,16 @@
         case 'my': if (t.ownerId !== me.id) return false; break;
         case 'assigned': if (t.createdBy !== me.id) return false; break;
         case 'overdue': if (!T.isOverdue(t)) return false; break;
-        case 'approvals': if (t.status !== 'pending_review' || t.ownerId === me.id) return false; break;
+        case 'approvals': if (!T.waitingOnMe(t, me)) return false; break;
+        case 'in_approval': if (t.status !== 'in_approval') return false; break;
         case 'today': if (!T.dueToday(t)) return false; break;
         case 'critical': if (!(t.priority === 'critical' && T.isOpen(t))) return false; break;
         case 'pending': if (!T.isOpen(t)) return false; break;
         case 'reopened': if (!t.reopenCount) return false; break;
         case 'recurring': if (!t.recurringId) return false; break;
         case 'escalated': if (!esc_.has(t.id)) return false; break;
-        case 'ontime': if (!(t.firstSubmittedAt && t.firstSubmittedAt <= t.kpiDueAt)) return false; break;
-        case 'late': if (!((t.firstSubmittedAt && t.firstSubmittedAt > t.kpiDueAt) || T.isOverdue(t))) return false; break;
+        case 'ontime': if (!(T.submittedOnTime(t))) return false; break;
+        case 'late': if (!((t.firstSubmittedAt && !T.submittedOnTime(t)) || T.isOverdue(t))) return false; break;
         case 'archived': if (!t.archived) return false; break;
       }
       if (f.status) { if (f.status === 'overdue' ? !T.isOverdue(t) : f.status === 'not_started' ? !['assigned', 'acknowledged'].includes(t.status) : t.status !== f.status) return false; }
@@ -79,8 +80,9 @@
     const overdue = live.filter(t => T.isOverdue(t)), notStarted = live.filter(t => ['assigned', 'acknowledged'].includes(t.status) && !T.isOverdue(t));
     const inProg = live.filter(t => ['in_progress', 'on_hold', 'reopened'].includes(t.status) && !T.isOverdue(t));
     const review = live.filter(t => t.status === 'pending_review');
+    const inAppr = live.filter(t => t.status === 'in_approval');
     const submitted = live.filter(t => t.firstSubmittedAt);
-    const ontime = submitted.filter(t => t.firstSubmittedAt <= t.kpiDueAt);
+    const ontime = submitted.filter(T.submittedOnTime);
     const tats = submitted.map(T.actualTatHrs);
     const avgTat = tats.length ? tats.reduce((a, b) => a + b, 0) / tats.length : null;
     const escIds = T.escalatedIds(); const escCount = live.filter(t => escIds.has(t.id)).length;
@@ -94,7 +96,8 @@
       ['Overdue', overdue.length, 'red', go({ status: 'overdue' })],
       ['Due today', live.filter(T.dueToday).length, 'amber', go({ preset: 'today' })],
       ['Critical open', live.filter(t => t.priority === 'critical' && T.isOpen(t)).length, 'red', go({ preset: 'critical' })],
-      ['Pending approval', review.length, 'violet', go({ status: 'pending_review' })],
+      ['Pending final review', review.length, 'violet', go({ status: 'pending_review' })],
+      ['In approval', inAppr.length, 'blue', go({ status: 'in_approval' }), 'before submission'],
       ['On-time delivery', pct(ontime.length, submitted.length) + '%', 'green', go({ preset: 'ontime' }), `${ontime.length} of ${submitted.length} submitted`],
       ['Avg. turnaround', T.fmtHrs(avgTat), '', go({ status: 'completed' }), 'assignment → submission'],
       ['Reopened', live.filter(t => t.reopenCount).length, 'amber', go({ preset: 'reopened' })],
@@ -104,6 +107,7 @@
     const seg = [
       { label: 'Completed', value: done.length, color: U.statusColor.completed, go: go({ status: 'completed' }) },
       { label: 'In progress', value: inProg.length, color: U.statusColor.in_progress, go: go({ status: 'in_progress' }) },
+      { label: 'In approval', value: inAppr.filter(t => !T.isOverdue(t)).length, color: U.statusColor.in_approval, go: go({ status: 'in_approval' }) },
       { label: 'Pending review', value: review.length, color: U.statusColor.pending_review, go: go({ status: 'pending_review' }) },
       { label: 'Overdue', value: overdue.length, color: U.statusColor.overdue, go: go({ status: 'overdue' }) },
       { label: 'Not started', value: notStarted.length, color: U.statusColor.assigned, go: go({ status: 'not_started' }) }
@@ -111,7 +115,7 @@
     const depts = T.visibleDepts(me).map(d => {
       const ts = live.filter(t => t.deptId === d.id), sub = ts.filter(t => t.firstSubmittedAt);
       const due = ts.filter(t => t.kpiDueAt <= Date.now() || t.firstSubmittedAt);
-      const ot = due.length ? pct(due.filter(t => t.firstSubmittedAt && t.firstSubmittedAt <= t.kpiDueAt).length, due.length) : null;
+      const ot = due.length ? pct(due.filter(t => T.submittedOnTime(t)).length, due.length) : null;
       return { d, total: ts.length, ot, od: ts.filter(t => T.isOverdue(t)).length, sub: sub.length };
     });
     const emps = T.visibleUsers(me).filter(u => u.role === 'employee').map(u => {
@@ -150,7 +154,7 @@
   };
 
   /* ================= TASK LISTS ================= */
-  const PRESET_TITLES = { '': 'All tasks', my: 'My tasks', assigned: 'Assigned by me', overdue: 'Overdue tasks', approvals: 'Pending approvals', today: 'Due today', critical: 'Critical open tasks', pending: 'Pending tasks', reopened: 'Reopened tasks', recurring: 'Recurring task instances', escalated: 'Escalated tasks', ontime: 'Submitted on time', late: 'Late / overdue', archived: 'Archived tasks' };
+  const PRESET_TITLES = { '': 'All tasks', my: 'My tasks', assigned: 'Assigned by me', overdue: 'Overdue tasks', approvals: 'Approvals waiting for me', in_approval: 'Tasks in approval', today: 'Due today', critical: 'Critical open tasks', pending: 'Pending tasks', reopened: 'Reopened tasks', recurring: 'Recurring task instances', escalated: 'Escalated tasks', ontime: 'Submitted on time', late: 'Late / overdue', archived: 'Archived tasks' };
   let sortState = { key: 'due', dir: 1 };
   V.tasks = (f, me) => {
     const list = U.sortTasks(T.filterTasks(T.visibleTasks(me), f, me), sortState.key, sortState.dir);
@@ -158,7 +162,7 @@
     $('#view').innerHTML = `
       <div class="page-head"><div><h1>${title}</h1><div class="sub">${list.length} task(s)${f.preset === 'approvals' ? ' awaiting your review' : ''}</div></div>
         <div class="actions"><a class="btn" href="#/board?${qs(f)}">▦ Board</a><a class="btn" href="#/calendar">📅 Calendar</a><button class="btn" id="exp-csv">Export CSV</button><button class="btn" id="exp-xls">Export Excel</button></div></div>
-      <div class="tabs">${['', 'my', 'assigned', 'overdue', 'approvals', 'today', 'recurring', 'archived'].filter(p => me.role !== 'employee' || !['assigned', 'approvals'].includes(p)).map(p => `<button data-preset="${p}" class="${(f.preset || '') === p ? 'on' : ''}">${PRESET_TITLES[p]}</button>`).join('')}</div>
+      <div class="tabs">${['', 'my', 'assigned', 'overdue', 'approvals', 'in_approval', 'today', 'recurring', 'archived'].filter(p => me.role !== 'employee' || p !== 'assigned').map(p => `<button data-preset="${p}" class="${(f.preset || '') === p ? 'on' : ''}">${PRESET_TITLES[p]}</button>`).join('')}</div>
       ${filterBar(f, me)}
       <div class="card" style="padding:0">${U.taskTable(list)}</div>`;
     const v = $('#view'); wireFilters(v, f, 'tasks'); wireRows(v);
@@ -171,7 +175,7 @@
   /* ================= KANBAN ================= */
   V.board = (f, me) => {
     const list = T.filterTasks(T.visibleTasks(me), f, me).filter(t => t.status !== 'cancelled');
-    const cols = ['assigned', 'acknowledged', 'in_progress', 'on_hold', 'reopened', 'pending_review', 'completed'];
+    const cols = ['assigned', 'acknowledged', 'in_progress', 'on_hold', 'reopened', 'in_approval', 'pending_review', 'completed'];
     $('#view').innerHTML = `
       <div class="page-head"><div><h1>Kanban board</h1><div class="sub">Drag a card to change status. Moves are validated against the workflow rules.</div></div><div class="actions"><a class="btn" href="#/tasks?${qs(f)}">☰ List</a></div></div>
       ${filterBar(f, me, { status: false })}
@@ -199,6 +203,8 @@
         };
         if (target === 'on_hold') return U.reasonPrompt('Put task on hold', 'Dependency / reason', '', r => { U.act(() => T.api.setStatus(me, id, 'on_hold', r), 'On hold').then(ok => { if (ok) U.closeLayer(); }) });
         if (target === 'pending_review') return U.reasonPrompt('Submit completion', 'Completion remarks', '', r => { U.act(() => T.api.submit(me, id, r), 'Submitted for review').then(ok => { if (ok) U.closeLayer(); }) });
+        if (target === 'in_approval') return U.act(() => T.api.requestApproval(me, id, ''), 'Sent for approval');
+        if (t.status === 'in_approval') return U.toast('Open the task to approve or reject the current approval step.', true);
         if (target === 'reopened') return U.reasonPrompt('Reopen task', 'What needs correction?', '', r => { U.act(() => T.api.reopen(me, id, r), 'Reopened').then(ok => { if (ok) U.closeLayer(); }) });
         if (!map[target]) return U.toast(`Tasks cannot be moved back to ${T.statusLabel(target)}.`, true);
         U.act(map[target], `Moved to ${T.statusLabel(target)}`);
@@ -323,6 +329,10 @@
         <td>${x.members}</td><td><a href="${T.drill({ dept: x.d.id, preset: 'pending' })}">${x.open}</a></td>
         ${admin ? `<td class="nowrap"><button class="btn sm" data-add-member="${x.d.id}">＋ Add member</button> <button class="btn sm" data-rename="${x.d.id}">Rename</button></td>` : ''}</tr>`).join('')}
       </tbody></table></div></div>
+      ${admin && T.isShared() ? '<div id="tm-requests"></div>' : ''}
+      ${T.isShared() && admin ? `<div class="card" style="padding:0;margin-bottom:16px"><div class="card-head" style="padding:14px 16px 0"><h2>Sign-in status</h2><span class="small muted">People sign in with their Claude account (same work email)</span></div><div class="table-wrap"><table><thead><tr><th>Member</th><th>Role</th><th>Work email</th><th>Status</th></tr></thead><tbody>
+        ${D().users.filter(u => u.active).map(u => `<tr><td>${U.avatar(u.id)}</td><td class="small">${T.ROLES[u.role]}</td><td class="small">${esc(u.email || '—')}</td><td>${u.claudeId ? '<span class="pill s-completed">Signed in</span>' : '<span class="pill s-assigned">Not signed in yet</span>'}</td></tr>`).join('')}
+      </tbody></table></div></div>` : ''}
       <div class="card" style="padding:0"><div class="card-head" style="padding:14px 16px 0"><h2>Team members &amp; workload</h2><span class="small muted">${rows.length} employee(s)</span></div><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Department</th><th>Manager</th><th>Active</th><th>Overdue</th><th>Critical</th><th>Due today</th><th>In review</th><th>KPI (${range.label})</th><th>Leave / backup</th><th></th></tr></thead><tbody>
       ${rows.map(r => `<tr><td>${U.avatar(r.u.id)}</td><td class="small">${esc(T.deptName(r.u.deptId))}</td><td class="small">${esc(T.userName(r.u.managerId))}</td>
         <td><a href="${T.drill({ owner: r.u.id, preset: 'pending' })}"><b>${r.open}</b></a></td><td><a href="${T.drill({ owner: r.u.id, status: 'overdue' })}" style="color:var(--danger)"><b>${r.od}</b></a></td><td>${r.crit}</td><td>${r.today}</td><td>${r.review}</td>
@@ -331,6 +341,7 @@
         <td class="nowrap"><button class="btn sm" data-assign="${r.u.id}">＋ Assign</button> <button class="btn sm" data-leave="${r.u.id}">${r.u.onLeave ? 'End leave' : 'Leave'}</button></td></tr>`).join('')}
       </tbody></table></div>${rows.length ? '' : `<div class="empty">No team members yet.${admin ? ' Click “＋ Add team member” to add the first one.' : ''}</div>`}</div>`;
     const v = $('#view');
+    if (admin && T.isShared()) renderRequests(me);
     if (admin) {
       $('#tm-add-user').onclick = () => editUser(me, null);
       $('#tm-add-dept').onclick = () => deptModal(me, null);
@@ -368,7 +379,7 @@
       <div class="actions"><button class="btn primary" id="run-engine">▶ Run follow-up engine now</button><button class="btn" id="fu-exp">Export log</button></div></div>
       <div class="dash-grid"><div class="card span-5"><div class="card-head"><h2>Escalation matrix</h2>${me.role === 'super_admin' ? '<a href="#/admin">Configure →</a>' : ''}</div>
         <table><thead><tr><th>Trigger</th><th>Action</th><th>Recipient</th></tr></thead><tbody>${rules.map(r => `<tr><td class="small">${r[0]}</td><td class="small">${r[1]}</td><td class="small">${r[2]}</td></tr>`).join('')}</tbody></table>
-        <p class="small muted">Reminders stop automatically when a task is submitted, completed or cancelled. ${T.isServer() ? 'Email &amp; Teams are sent by the server through Microsoft Graph; ✓ sent · ~ queued · ✕ failed · – skipped (channel not configured).' : 'Email &amp; Teams deliveries are <b>simulated</b> in this standalone build; the server edition sends them via Microsoft Graph and records the delivery status here.'}</p></div>
+        <p class="small muted">Reminders stop automatically when a task is submitted, completed or cancelled. ${T.isShared() ? 'On this team page, reminders and escalations are created while anyone on the team has Task360 open, and arrive in the 🔔 notification centre (email and Teams need the server edition).' : T.isServer() ? 'Email &amp; Teams are sent by the server through Microsoft Graph; ✓ sent · ~ queued · ✕ failed · – skipped (channel not configured).' : 'Email &amp; Teams deliveries are <b>simulated</b> in this standalone build; the server edition sends them via Microsoft Graph and records the delivery status here.'}</p></div>
       <div class="card span-7"><div class="card-head"><h2>Notification delivery history</h2><select class="input" id="fu-type" style="width:auto"><option value="">All types</option>${types.map(t => `<option value="${t}" ${f.type === t ? 'selected' : ''}>${esc(T.notifTypeLabel(t))}</option>`).join('')}</select></div>
         <div class="table-wrap" style="max-height:620px"><table><thead><tr><th>When (IST)</th><th>Type</th><th>To</th><th>Message</th><th>Channels</th></tr></thead><tbody>
         ${list.map(n => `<tr ${n.taskId ? `class="click" data-task="${n.taskId}"` : ''}><td class="small nowrap">${T.fmt(n.at)}</td><td class="small">${esc(T.notifTypeLabel(n.type))}</td><td class="small nowrap">${esc(T.userName(n.to))}</td><td class="small">${esc(n.message)}</td><td class="small nowrap">${n.channels.map(c => `<span title="${esc(c.status + (c.error ? ': ' + c.error : ''))}">${c.channel === 'in-app' ? '🔔' : c.channel === 'email' ? '✉' : '💬'}${({ delivered: '✓', sent: '✓', failed: '✕', skipped: '–' })[c.status] || '~'}</span>`).join(' ')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No notifications</td></tr>'}
@@ -401,13 +412,17 @@
         <div class="grid2"><label class="field"><span>Assignee</span><select class="input" id="rc-o">${users.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select></label>
         <label class="field"><span>Due time (IST)</span><input class="input" type="time" id="rc-tm" value="18:00"></label></div>
         <div class="grid2"><label class="field"><span>Priority</span><select class="input" id="rc-p">${T.PRIORITIES.map(p => `<option value="${p.id}" ${p.id === 'high' ? 'selected' : ''}>${p.label}</option>`).join('')}</select></label>
-        <label class="field"><span>Category</span><select class="input" id="rc-c">${T.CATEGORIES.map(c => `<option>${esc(c)}</option>`).join('')}</select></label></div>`,
+        <label class="field"><span>Category</span><select class="input" id="rc-c">${T.CATEGORIES.map(c => `<option>${esc(c)}</option>`).join('')}</select></label></div>
+        <label class="check"><input type="checkbox" id="rc-appr-on"> Each task requires approval before submission</label>
+        <div id="rc-appr" class="hidden">${U.approvalEditor([], null)}</div>`,
         `<button class="btn" data-close>Cancel</button><button class="btn primary" id="rc-ok">Save template</button>`, m => {
           $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+          U.wireApprovalEditor($('#rc-appr'));
+          $('#rc-appr-on').onchange = e => $('#rc-appr').classList.toggle('hidden', !e.target.checked);
           $('#rc-ok').onclick = () => {
             const fq = $('#rc-f').value, dn = +$('#rc-d').value, owner = T.user($('#rc-o').value);
             const p = T.PRIORITIES.find(x => x.id === $('#rc-p').value);
-            U.act(() => T.api.saveRecurring(me, { title: $('#rc-t').value, frequency: fq, dayOfMonth: dn || 1, weekday: Math.min(dn, 6), ownerId: owner && owner.id, deptId: owner && owner.deptId, dueTime: $('#rc-tm').value, priority: p.id, tatHrs: p.tat, category: $('#rc-c').value }), 'Recurring template saved').then(ok => { if (ok) U.closeLayer(); })
+            U.act(() => T.api.saveRecurring(me, { title: $('#rc-t').value, frequency: fq, dayOfMonth: dn || 1, weekday: Math.min(dn, 6), ownerId: owner && owner.id, deptId: owner && owner.deptId, dueTime: $('#rc-tm').value, priority: p.id, tatHrs: p.tat, category: $('#rc-c').value, approvals: $('#rc-appr-on').checked ? U.readApprovals($('#rc-appr')) : [] }), 'Recurring template saved').then(ok => { if (ok) U.closeLayer(); })
           };
         });
     };
@@ -422,11 +437,11 @@
     const created = vis.filter(t => t.createdAt >= range.from && t.createdAt <= range.to);
     const completed = vis.filter(t => t.completedAt && t.completedAt >= range.from && t.completedAt <= range.to);
     const dueIn = vis.filter(t => t.kpiDueAt >= range.from && t.kpiDueAt <= Math.min(range.to, now));
-    const ontime = dueIn.filter(t => t.firstSubmittedAt && t.firstSubmittedAt <= t.kpiDueAt);
+    const ontime = dueIn.filter(t => T.submittedOnTime(t));
     const overdueNow = vis.filter(t => T.isOverdue(t));
     const byDept = T.visibleDepts(me).map(d => {
       const due = dueIn.filter(t => t.deptId === d.id);
-      return { d, created: created.filter(t => t.deptId === d.id).length, completed: completed.filter(t => t.deptId === d.id).length, due: due.length, ot: due.filter(t => t.firstSubmittedAt && t.firstSubmittedAt <= t.kpiDueAt).length, od: overdueNow.filter(t => t.deptId === d.id).length };
+      return { d, created: created.filter(t => t.deptId === d.id).length, completed: completed.filter(t => t.deptId === d.id).length, due: due.length, ot: due.filter(t => T.submittedOnTime(t)).length, od: overdueNow.filter(t => t.deptId === d.id).length };
     });
     const tatRows = completed.filter(t => t.firstSubmittedAt).map(t => ({ t, a: T.actualTatHrs(t) })).sort((a, b) => (b.a - b.t.expectedTatHrs) - (a.a - a.t.expectedTatHrs)).slice(0, 10);
     $('#view').innerHTML = `<div class="page-head"><div><h1>Reports &amp; analytics</h1><div class="sub">${range.label}</div></div>
@@ -508,9 +523,11 @@
         <div class="section-title">Holidays</div>
         <table><tbody>${s.holidays.sort((a, b) => a.date.localeCompare(b.date)).map((h, i) => `<tr><td>${h.date}</td><td>${esc(h.name)}</td><td><button class="btn sm danger" data-delhol="${h.date}">Remove</button></td></tr>`).join('')}</tbody></table>
         <div style="display:flex;gap:6px;margin-top:8px"><input class="input" type="date" id="hol-d"><input class="input" id="hol-n" placeholder="Holiday name"><button class="btn" id="hol-add">Add</button></div></div>`,
-      data: T.isServer() ? `<div class="card" style="max-width:640px"><h2>Data</h2><div class="alert info">Data is stored in the shared PostgreSQL database${D().demo ? ' and currently contains <b>demonstration data</b> (see server/README.md to start with an empty database)' : ''}. Database backups are handled by Supabase.</div>
+      data: T.isShared() ? `<div class="card" style="max-width:680px"><h2>Data</h2><div class="alert info">Every change is saved straight away to this page’s shared database and kept permanently, so you can review it later. Each task keeps its full history (who did what and when), approvals and comments; the Audit Trail shows everything together.</div>
+        <button class="btn" id="dt-exp">Download a copy (JSON)</button></div>` : T.isServer() ? `<div class="card" style="max-width:640px"><h2>Data</h2><div class="alert info">Data is stored in the shared PostgreSQL database${D().demo ? ' and currently contains <b>demonstration data</b> (see server/README.md to start with an empty database)' : ''}. Database backups are handled by Supabase.</div>
         <button class="btn" id="dt-exp">Download snapshot of what you can see (JSON)</button></div>` : `<div class="card" style="max-width:640px"><h2>Data</h2><div class="alert warn">This standalone build stores <b>demonstration data</b> in this browser only. Deploy the server edition (see server/README.md) for multi-user access and permanent storage.</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="dt-exp">Download backup (JSON)</button><label class="btn">Restore backup<input type="file" id="dt-imp" accept=".json" hidden></label><button class="btn danger" id="dt-reset">Reset demo data</button></div></div>`
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="dt-exp">Download backup (JSON)</button><label class="btn">Restore backup<input type="file" id="dt-imp" accept=".json" hidden></label><button class="btn danger" id="dt-reset">Reset demo data</button><button class="btn danger" id="dt-empty">Start empty workspace</button></div>
+        <p class="small muted">“Start empty workspace” clears all demo tasks and people and keeps your departments, with ${esc((D().users.find(u => u.role === 'super_admin') || {}).name || 'you')} as Super Admin.</p></div>`
     };
     $('#view').innerHTML = `<div class="page-head"><div><h1>Admin settings</h1><div class="sub">System configuration — every change is audited</div></div></div>
       <div class="tabs">${[['users', 'Users & departments'], ['kpi', 'KPI policy'], ['rules', 'Reminders & escalation'], ['calendar', 'Working calendar'], ['data', 'Data']].map(([k, l]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>${body[tab]}`;
@@ -549,9 +566,11 @@
     }
     if (tab === 'data') {
       $('#dt-exp').onclick = () => U.download('task360-backup.json', T.store.exportJSON(), 'application/json');
-      if (T.isServer()) return;
+      if (T.isServer() || T.isShared()) return;
       $('#dt-imp').onchange = e => { const fl = e.target.files[0]; if (!fl) return; fl.text().then(txt => U.act(() => T.store.importJSON(txt), 'Backup restored')); };
-      $('#dt-reset').onclick = () => { if (confirm('Reset all data to a fresh demonstration dataset?')) { T.store.reset(); T.engine.run(); U.toast('Demo data reset'); T.app.refresh(); } };
+      const twoStep = (btn, label, fn) => btn.onclick = () => { if (btn.dataset.armed !== '1') { btn.dataset.armed = '1'; btn.textContent = label; return; } fn(); };
+      twoStep($('#dt-reset'), 'Click again to reload demo data', () => { T.store.reset(); T.engine.run(); U.toast('Demo data reloaded'); T.app.refresh(); });
+      twoStep($('#dt-empty'), 'Click again to clear all demo data', () => { T.store.resetEmpty(); U.toast('Demo data cleared — empty workspace ready'); T.app.go('team'); T.app.refresh(); });
     }
   };
   /* Add or rename a department (Super Admin). */
@@ -571,14 +590,33 @@
       });
   }
 
-  function editUser(me, id, presetDept) {
+  /* Access requests from people who opened the team page but are not on the team yet. */
+  async function renderRequests(me) {
+    const box = $('#tm-requests'); if (!box) return;
+    const reqs = T.shared.requests(); if (!reqs.length) { box.innerHTML = ''; return; }
+    const ps = await T.shared.profiles(reqs.map(r => r.claudeId));
+    if (!$('#tm-requests')) return;
+    box.innerHTML = `<div class="card" style="padding:0;margin-bottom:16px"><div class="card-head" style="padding:14px 16px 0"><h2>Access requests</h2><span class="small muted">${reqs.length} waiting</span></div><div class="table-wrap"><table><tbody>
+      ${reqs.map(r => `<tr><td data-rq-name="${esc(r.claudeId)}"></td><td class="small" data-rq-email="${esc(r.claudeId)}"></td><td class="small muted">${T.fmt(r.at)}</td><td class="nowrap"><button class="btn sm primary" data-rq-add="${esc(r.claudeId)}">Add to team</button> <button class="btn sm" data-rq-no="${esc(r.claudeId)}">Dismiss</button></td></tr>`).join('')}
+    </tbody></table></div></div>`;
+    reqs.forEach(r => {
+      const p = ps[r.claudeId] || {};
+      box.querySelector(`[data-rq-name="${CSS.escape(r.claudeId)}"]`).textContent = p.name || 'Someone in your organization';
+      box.querySelector(`[data-rq-email="${CSS.escape(r.claudeId)}"]`).textContent = p.email || '';
+    });
+    $$('[data-rq-add]', box).forEach(b => b.onclick = () => { const p = ps[b.dataset.rqAdd] || {}; editUser(me, null, null, { name: p.name || '', email: p.email || '', claudeId: b.dataset.rqAdd }); });
+    $$('[data-rq-no]', box).forEach(b => b.onclick = () => T.shared.dismissRequest(b.dataset.rqNo).then(() => renderRequests(me)).catch(e => U.toast(e.message || 'Could not dismiss', true)));
+  }
+
+  function editUser(me, id, presetDept, preset) {
     const depts = D().departments;
     const deptMgr = d => (D().users.find(x => x.active && x.role === 'manager' && (x.teams || []).includes(d)) || {}).id || '';
     const startDept = presetDept || (depts[0] && depts[0].id) || null;
-    const u = id ? T.user(id) : { name: '', role: 'employee', deptId: startDept, managerId: deptMgr(startDept), email: '', teams: [] };
+    const u = id ? T.user(id) : { name: (preset && preset.name) || '', role: 'employee', deptId: startDept, managerId: deptMgr(startDept), email: (preset && preset.email) || '', teams: [] };
+    let claudeId = (preset && preset.claudeId) || null;
     const mgrs = D().users.filter(x => x.role !== 'employee' && x.id !== id && x.active);
-    U.modal(id ? 'Edit team member' : 'Add team member', `<label class="field"><span>Full name *</span><input class="input" id="eu-n" value="${esc(u.name)}"></label>
-      <label class="field"><span>Work email${T.isServer() ? ' *' : ''}</span><input class="input" id="eu-e" type="email" value="${esc(u.email)}" placeholder="name@company.com"></label>
+    U.modal(id ? 'Edit team member' : 'Add team member', `${!id && T.isShared() ? `<label class="field"><span>Find a colleague in your organization</span><input class="input" id="eu-find" placeholder="Type a name or email" autocomplete="off"></label><div id="eu-hits" class="small" style="margin:-6px 0 10px"></div>` : ''}<label class="field"><span>Full name *</span><input class="input" id="eu-n" value="${esc(u.name)}"></label>
+      <label class="field"><span>Work email${T.isServer() || T.isShared() ? ' * (the email they sign in with)' : ''}</span><input class="input" id="eu-e" type="email" value="${esc(u.email)}" placeholder="name@company.com"></label>
       <div class="grid2"><label class="field"><span>Role</span><select class="input" id="eu-r">${Object.entries(T.ROLES).map(([k, l]) => `<option value="${k}" ${u.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="field"><span>Home department</span><select class="input" id="eu-d"><option value="">— none —</option>${depts.map(d => `<option value="${d.id}" ${u.deptId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label></div>
       <label class="field"><span>Reports to</span><select class="input" id="eu-m"><option value="">— none —</option>${mgrs.map(m => `<option value="${m.id}" ${u.managerId === m.id ? 'selected' : ''}>${esc(m.name)} (${T.ROLES[m.role]})</option>`).join('')}</select></label>
@@ -589,12 +627,27 @@
         const syncRole = () => $('#eu-teams-f').classList.toggle('hidden', $('#eu-r').value !== 'manager');
         $('#eu-r').onchange = syncRole; syncRole();
         if (!id) $('#eu-d').onchange = () => { const mg = deptMgr($('#eu-d').value); if (mg) $('#eu-m').value = mg; };
+        const find = $('#eu-find');
+        if (find) {
+          const show = hits => {
+            const box = $('#eu-hits'); box.innerHTML = '';
+            hits.forEach(h => { const a = document.createElement('button'); a.type = 'button'; a.className = 'chip'; a.style.margin = '2px'; a.textContent = h.name + (h.email ? ` · ${h.email}` : '');
+              a.onclick = () => { $('#eu-n').value = h.name; if (h.email) $('#eu-e').value = h.email; claudeId = h.id; box.textContent = `Selected: ${h.name}`; }; box.appendChild(a); });
+          };
+          find.onfocus = () => T.shared.search('').then(show);
+          find.oninput = () => T.shared.search(find.value).then(show);
+        }
         $('#eu-ok').onclick = () => {
           const rec = { id: id || undefined, name: $('#eu-n').value.trim(), email: $('#eu-e').value.trim(), role: $('#eu-r').value, deptId: $('#eu-d').value || null, managerId: $('#eu-m').value || null, teams: $$('[data-team]', m).filter(i => i.checked).map(i => i.dataset.team) };
           if (id) rec.active = $('#eu-a').checked;
-          if (!id && T.isServer() && !rec.email) return U.toast('Email is required — the user signs in with it.', true);
+          if (!id && (T.isServer() || T.isShared()) && !rec.email) return U.toast('Email is required — the person signs in with it.', true);
+          if (!id && claudeId) rec.claudeId = claudeId;
           if (rec.role !== 'manager') rec.teams = [];
-          U.act(() => T.api.saveUser(me, rec), id ? 'Team member updated' : `${rec.name} added to the team`).then(ok => { if (ok) { U.closeLayer(); T.app.renderUserSwitch(); } })
+          U.act(() => T.api.saveUser(me, rec), id ? 'Team member updated' : `${rec.name} added to the team`).then(ok => {
+            if (!ok) return;
+            U.closeLayer(); T.app.renderUserSwitch();
+            if (!id && T.isShared() && claudeId) T.shared.dismissRequest(claudeId).catch(() => {});
+          })
         };
       });
   }
@@ -618,7 +671,7 @@
       return `Pendency by employee (open tasks / overdue):\n${r.map(x => `• ${x.u.name}: ${x.o} open / ${x.od} overdue`).join('\n')}\n\nHighest pendency: ${r[0].u.name} (${r[0].o}). Lightest load: ${light.u.name} (${light.o}).\nRecommendation: route new work to ${light.u.name}${r[0].od > 1 ? ` and consider reassigning one overdue task from ${r[0].u.name}` : ''}.`;
     }
     if (/department|missing deadline|consistently|dept/.test(s)) {
-      const r = T.visibleDepts(me).map(d => { const due = vis.filter(t => t.deptId === d.id && (t.kpiDueAt <= Date.now() || t.firstSubmittedAt)); const late = due.filter(t => (t.firstSubmittedAt && t.firstSubmittedAt > t.kpiDueAt) || T.isOverdue(t)); return { d, due: due.length, late: late.length, rate: due.length ? 100 * late.length / due.length : 0 }; }).sort((a, b) => b.rate - a.rate);
+      const r = T.visibleDepts(me).map(d => { const due = vis.filter(t => t.deptId === d.id && (t.kpiDueAt <= Date.now() || t.firstSubmittedAt)); const late = due.filter(t => (t.firstSubmittedAt && !T.submittedOnTime(t)) || T.isOverdue(t)); return { d, due: due.length, late: late.length, rate: due.length ? 100 * late.length / due.length : 0 }; }).sort((a, b) => b.rate - a.rate);
       return `Deadline misses by department (late or overdue ÷ tasks due):\n${r.map(x => `• ${x.d.name}: ${x.late}/${x.due} (${x.rate.toFixed(0)}%)`).join('\n')}\n\n${r[0] ? `${r[0].d.name} is missing deadlines most often. Review its workload and recurring task TATs.` : ''}`;
     }
     if (/bottleneck|depend|block/.test(s)) {
@@ -636,7 +689,8 @@
       return `${od.length} overdue task(s):\n${od.slice(0, 15).map(line).join('\n') || 'none 🎉'}`;
     }
     if (/approv|review/.test(s)) {
-      const rev = open.filter(t => t.status === 'pending_review'); return `${rev.length} task(s) pending review:\n${rev.map(line).join('\n') || 'none'}`;
+      const rev = open.filter(t => t.status === 'pending_review'), appr = open.filter(t => t.status === 'in_approval');
+      return `${appr.length} task(s) waiting for approval before submission:\n${appr.map(t => `${line(t)} — waiting on ${T.userName(T.stageOf(t).waitingOn)} (${T.stageOf(t).stage})`).join('\n') || 'none'}\n\n${rev.length} task(s) submitted and pending final review:\n${rev.map(line).join('\n') || 'none'}`;
     }
     const who = emps.find(u => s.includes(u.name.toLowerCase().split(' ')[0]));
     if (who) {
@@ -657,6 +711,30 @@
     $$('.chip').forEach(b => b.onclick = () => ask(b.textContent));
     $('#chat-f').onsubmit = e => { e.preventDefault(); ask($('#chat-q').value); };
     $('#chat-q').focus();
+  };
+
+  /* ================= WORKFLOW TRACKER ================= */
+  V.workflow = (f, me) => {
+    const list = T.filterTasks(T.visibleTasks(me), { ...f, preset: '' }, me).filter(t => T.isOpen(t) && !t.archived)
+      .map(t => ({ t, s: T.stageOf(t) })).sort((a, b) => (a.s.since || 0) - (b.s.since || 0));
+    const groups = {};
+    list.forEach(x => { const k = x.t.status === 'in_approval' ? 'Waiting for approval' : x.t.status === 'pending_review' ? 'Waiting for final review' : x.t.status === 'assigned' ? 'Waiting for acknowledgement' : x.t.status === 'on_hold' ? 'On hold' : T.approvalsDone(x.t) ? 'Approved, ready to submit' : 'With the assignee'; (groups[k] = groups[k] || []).push(x); });
+    const order = ['Waiting for acknowledgement', 'With the assignee', 'On hold', 'Waiting for approval', 'Approved, ready to submit', 'Waiting for final review'];
+    const mine = list.filter(x => x.s.waitingOn === me.id).length;
+    $('#view').innerHTML = `<div class="page-head"><div><h1>Workflow tracker</h1><div class="sub">Where every open task is right now, and who it is waiting on · longest waiting first</div></div>
+      <div class="actions"><a class="btn" href="${T.drill({ preset: 'approvals' })}">Waiting for me (${mine})</a></div></div>
+      ${filterBar(f, me, { status: false, category: false })}
+      <div class="cards">${order.map(k => `<div class="card stat" data-jump="${esc(k)}"><div class="label">${esc(k)}</div><div class="value">${(groups[k] || []).length}</div></div>`).join('')}</div>
+      ${order.filter(k => (groups[k] || []).length).map(k => `<div class="card" style="padding:0;margin-bottom:16px" id="grp-${order.indexOf(k)}"><div class="card-head" style="padding:14px 16px 0"><h2>${esc(k)}</h2><span class="small muted">${groups[k].length}</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Task</th><th>Assignee</th><th>Current stage</th><th>Waiting on</th><th>Waiting for</th><th>Approvals</th><th>Due (IST)</th></tr></thead><tbody>
+        ${groups[k].map(({ t, s }) => `<tr class="click" data-task="${t.id}"><td><div class="task-title">${esc(t.title)}</div><div class="tid">${t.id} · ${esc(T.deptName(t.deptId))}</div></td>
+          <td>${U.avatar(t.ownerId)}</td><td class="small">${esc(s.stage)}</td><td>${s.waitingOn ? U.avatar(s.waitingOn) : '—'}${s.waitingOn === me.id ? ' <span class="pill s-in_approval">you</span>' : ''}</td>
+          <td class="small nowrap">${s.since ? U.since(s.since) : '—'}</td>
+          <td class="small nowrap">${T.hasApprovals(t) ? `${t.approvals.filter(a => a.status === 'approved').length}/${t.approvals.length} approved` : '<span class="muted">none</span>'}</td>
+          <td class="small nowrap">${T.fmt(t.dueAt)} ${T.isOverdue(t) ? '<span class="pill flag-overdue">Overdue</span>' : ''}</td></tr>`).join('')}
+        </tbody></table></div></div>`).join('') || '<div class="card empty">No open tasks match the filters.</div>'}`;
+    const v = $('#view'); wireFilters(v, f, 'workflow'); wireRows(v);
+    $$('[data-jump]', v).forEach(c => c.onclick = () => { const el = $('#grp-' + order.indexOf(c.dataset.jump)); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   };
 
   V.denied = msg => { $('#view').innerHTML = `<div class="card empty"><h2>Access restricted</h2><p>${esc(msg || 'Your role does not have access to this page.')}</p><a class="btn" href="#/dashboard">Back to dashboard</a></div>`; };

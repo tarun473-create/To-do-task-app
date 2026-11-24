@@ -13,7 +13,8 @@ const LABEL: Record<string, string> = {
   review: 'Review requested', approved: 'Task approved', reopened: 'Task reopened', daily_followup: 'Daily follow-up',
   comment: 'New comment', weekly_summary: 'Weekly performance summary', monthly_kpi: 'Monthly KPI report',
   digest: 'Morning digest', deadline_changed: 'Deadline changed', cancelled: 'Task cancelled', recurring: 'Recurring task',
-  backup: 'Backup assignment'
+  backup: 'Backup assignment', approval: 'Approval needed', approval_done: 'Approvals complete',
+  approval_rejected: 'Approval rejected', approval_reminder: 'Approval reminder'
 };
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const istFmt = new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });

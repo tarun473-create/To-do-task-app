@@ -56,7 +56,7 @@ create table if not exists task360.tasks (
   dept_id          text not null references task360.departments(id),
   owner_id         text not null references task360.users(id),
   created_by       text not null references task360.users(id),
-  status           text not null check (status in ('assigned', 'acknowledged', 'in_progress', 'on_hold', 'pending_review', 'completed', 'reopened', 'cancelled')),
+  status           text not null,
   priority         text not null check (priority in ('low', 'medium', 'high', 'critical')),
   due_at           timestamptz not null,
   original_due_at  timestamptz not null,        -- immutable (trigger below)
@@ -69,6 +69,10 @@ create table if not exists task360.tasks (
   updated_at       timestamptz not null default now(),
   check (doc->>'id' = id)
 );
+-- Status list (re-applied on every migration so existing databases pick up new statuses)
+alter table task360.tasks drop constraint if exists tasks_status_check;
+alter table task360.tasks add constraint tasks_status_check check (status in
+  ('assigned', 'acknowledged', 'in_progress', 'on_hold', 'in_approval', 'pending_review', 'completed', 'reopened', 'cancelled'));
 create index if not exists tasks_owner_status_idx on task360.tasks (owner_id, status);
 create index if not exists tasks_dept_due_idx     on task360.tasks (dept_id, due_at);
 create index if not exists tasks_open_due_idx     on task360.tasks (due_at) where status not in ('completed', 'cancelled');

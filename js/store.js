@@ -17,6 +17,7 @@ window.T360 = window.T360 || {};
     { id: 'acknowledged', label: 'Acknowledged', desc: 'Employee has accepted the task' },
     { id: 'in_progress', label: 'In Progress', desc: 'Employee is working on the task' },
     { id: 'on_hold', label: 'On Hold', desc: 'Pending a specific dependency' },
+    { id: 'in_approval', label: 'In Approval', desc: 'Waiting for approval before submission' },
     { id: 'pending_review', label: 'Pending Review', desc: 'Submitted, awaiting manager approval' },
     { id: 'completed', label: 'Completed', desc: 'Reviewed and closed' },
     { id: 'reopened', label: 'Reopened', desc: 'Further correction or action required' },
@@ -268,6 +269,19 @@ window.T360 = window.T360 || {};
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data)); } catch (e) { /* in-memory only */ }
     },
     reset() { this.data = seed(); this.save(); },
+    /* Clear all demo tasks and people; keep departments and settings; keep the Super Admin. */
+    resetEmpty() {
+      const d = this.data || seed();
+      const admin = Object.assign({}, d.users.find(u => u.role === 'super_admin') || { id: 'u1', name: 'Tarun Rajput', role: 'super_admin', email: '' },
+        { managerId: null, deptId: null, teams: [], active: true, onLeave: false, backupId: null });
+      const now = Date.now();
+      this.data = {
+        version: 1, demo: false, seededAt: now, seq: 1, settings: d.settings || T.defaultSettings(),
+        departments: d.departments, users: [admin], tasks: [], recurring: [], notifications: [],
+        audit: [{ at: now, by: admin.id, action: 'reset', taskId: null, detail: 'Demo data cleared; empty workspace started' }], sentKeys: {}, leaves: []
+      };
+      this.save();
+    },
     exportJSON() { return JSON.stringify(this.data, null, 2); },
     importJSON(text) {
       const d = JSON.parse(text);

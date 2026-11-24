@@ -16,6 +16,32 @@ A team task management, accountability and KPI tracking system for department he
 
 Both editions use the same screens and the same rules engine (`js/engine.js`). The server runs that engine itself, so every permission, reason requirement and timestamp is enforced on the server. **To deploy the server edition, follow [`server/README.md`](server/README.md).**
 
+## Shared team page on claude.ai (no hosting needed)
+
+The same app can run as a shared page on claude.ai (`js/shared.js` adapter). People sign in with their Claude account. Every change is saved permanently in the page's shared database and appears live for everyone.
+
+- **First open by the owner:** a setup screen creates an empty workspace. There is no demo data, and the owner becomes Super Admin.
+- **Adding people:** the Super Admin adds team members by work email, or by searching the organization, under **Team & Workload → Add team member**. When that person opens the page, they are recognised automatically.
+- **Someone not on the team yet:** they can press **Ask for access**. The request appears on the Super Admin's Team page.
+- **Access:** share the page with team members as **Contributor** in the Share menu. Viewers can only look.
+- **Limits compared with the server edition:**
+  - Notifications are in-app only.
+  - Reminders and escalations run while someone on the team has the page open.
+  - Attachments record the file name only.
+  - Roles are enforced in the page itself, so share it only with your team.
+
+## Approval before submission
+
+Any task, or recurring task, can require one or more approvals before the assignee may submit it (maker–checker). The flow is:
+
+1. The assignee sends the task for approval, with an optional note.
+2. Each approver, in order, approves or rejects. A rejection needs a reason and sends the task back to the assignee.
+3. Once every step is approved, the assignee submits the task for final review.
+
+The task panel shows a workflow tracker: every stage, who it is waiting on, since when, and the full approval history. The **Workflow Tracker** page lists every open task by stage, longest waiting first. **Approvals for Me** lists the decisions waiting on you.
+
+Time spent waiting on approvers is not counted against the employee's turnaround time (TAT) or on-time KPI.
+
 ## Run the standalone demo
 
 ```bash

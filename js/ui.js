@@ -125,7 +125,7 @@
   U.taskTable = (tasks, opts = {}) => {
     if (!tasks.length) return `<div class="empty">No tasks match the current filters.</div>`;
     const rows = tasks.map(t => `<tr class="click" data-task="${t.id}">
-      <td><div class="task-title">${esc(t.title)}</div><div class="tid">${t.id}${t.recurringId ? ' · ↻ recurring' : ''}${t.dependsOn.length ? ' · ⛓ dependency' : ''}${t.archived ? ' · archived' : ''}</div></td>
+      <td><div class="task-title">${esc(t.title)}</div><div class="tid">${t.id}${t.closeRef ? ` · 📘 ${esc(T.periodLabel(t.closeRef.period))} close` : ''}${t.recurringId ? ' · ↻ recurring' : ''}${t.dependsOn.length ? ' · ⛓ dependency' : ''}${t.archived ? ' · archived' : ''}</div></td>
       <td>${U.avatar(t.ownerId)}</td>
       <td class="nowrap">${esc(T.deptName(t.deptId))}</td>
       <td>${U.priority(t.priority)}</td>
@@ -275,6 +275,7 @@
         ${blockers.length ? `<div class="alert warn">⛓ Blocked by ${blockers.map(b => `<a href="#" data-open="${b.id}">${b.id}</a> (${esc(T.userName(b.ownerId))} — bottleneck)`).join(', ')}</div>` : ''}
         ${t.externalDependency ? `<div class="alert info">External dependency approved by ${esc(T.userName(t.externalDependency.approvedBy))}: ${esc(t.externalDependency.reason)} — excluded from timeliness KPI.</div>` : ''}
         <p>${esc(t.description) || '<span class="muted">No description</span>'}</p>
+        ${t.scheduleRequired ? `<div class="alert ${(t.attachments || []).length ? 'info' : 'warn'}">📎 Schedule required — ${(t.attachments || []).length ? 'attached. You can submit when the work is done.' : 'attach the schedule (Attachments below) before submitting.'}</div>` : ''}
         <div class="section-title">Workflow — where this task is now</div>
         ${U.workflow(t)}
         ${T.hasApprovals(t) || (t.approvalLog || []).length ? `<div class="section-title">Approval history</div>${U.approvalLog(t)}` : ''}
@@ -283,7 +284,9 @@
           <dt>Assignee</dt><dd>${U.avatar(t.ownerId)}</dd>
           <dt>Created by</dt><dd>${U.avatar(t.createdBy)} · ${T.fmt(t.createdAt)}</dd>
           <dt>Reviewer</dt><dd>${U.avatar(t.reviewerId)}</dd>
-          <dt>Department</dt><dd>${esc(T.deptName(t.deptId))} · ${esc(t.category)}</dd>
+          <dt>Department</dt><dd>${esc(T.deptName(t.deptId))} · ${esc(t.category)}${t.module ? ` · ${esc(t.module)}` : ''}</dd>
+          ${t.closeRef ? `<dt>Month-end close</dt><dd><a href="#/close?period=${t.closeRef.period}">${esc(T.periodLabel(t.closeRef.period))} close</a> · activity ${esc(t.closeRef.sl)}</dd>` : ''}
+          ${(t.collaborators || []).length ? `<dt>Co-owners</dt><dd>${t.collaborators.map(c => U.avatar(c)).join(' ')}</dd>` : ''}
           <dt>Priority</dt><dd>${U.priority(t.priority)} · KPI weight ${t.kpiWeight} ${t.kpi ? '' : '· <b>excluded from KPI</b>'}</dd>
           <dt>Due (IST)</dt><dd><b>${T.fmt(t.dueAt)}</b> <span class="muted">(${T.rel(t.dueAt)})</span></dd>
           <dt>Original deadline</dt><dd>${T.fmt(t.originalDueAt)}${t.kpiDueAt !== t.dueAt ? ` · KPI deadline ${T.fmt(t.kpiDueAt)}` : ''}</dd>

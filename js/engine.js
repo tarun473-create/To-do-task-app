@@ -215,7 +215,7 @@
         title: input.title.trim(), description: (input.description || '').trim(),
         deptId: input.deptId || finalOwner.deptId, category: input.category || 'Ad hoc', priority: pr.id,
         ownerId: finalOwner.id, createdBy: actor.id, reviewerId: input.reviewerId || actor.id,
-        collaborators: input.collaborators || [],
+        collaborators: (Array.isArray(input.collaborators) ? input.collaborators : []).filter((id, i, a) => id !== finalOwner.id && T.user(id) && T.user(id).active && a.indexOf(id) === i),
         createdAt: at, assignedAt: at, startDate: input.startDate || T.istDateStr(at),
         dueAt: input.dueAt, originalDueAt: input.dueAt, kpiDueAt: input.dueAt,
         expectedTatHrs: Number(input.expectedTatHrs) || pr.tat,
@@ -228,7 +228,9 @@
         checklist: (input.checklist || []).filter(Boolean).map((text, i) => ({ id: 'c' + (i + 1), text, done: false })),
         ownership: [{ userId: finalOwner.id, from: at, to: null, reason: 'Initial assignment' + backupNote }],
         deadlineChanges: [], history: [],
-        approvals, approvalLog: [], approvalRound: 0
+        approvals, approvalLog: [], approvalRound: 0,
+        module: String(input.module || '').slice(0, 80), scheduleRequired: !!input.scheduleRequired,
+        closeRef: input.closeRef && /^\d{4}-\d{2}$/.test(input.closeRef.period || '') ? { period: input.closeRef.period, itemId: String(input.closeRef.itemId || ''), sl: input.closeRef.sl || null } : null
       };
       d.tasks.push(t);
       audit(actor.id, 'created', t, `Task created and assigned to ${finalOwner.name}${backupNote}; due ${T.fmt(t.dueAt)}` +
@@ -285,6 +287,7 @@
         const next = t.approvals.find(a => a.status !== 'approved');
         need(false, `This task needs approval before submission. Send it for approval first (next: ${next.label}, ${T.userName(next.approverId)}).`);
       }
+      if (t.scheduleRequired) need((t.attachments || []).length > 0, 'This activity needs its schedule. Attach the schedule file before submitting.');
       const blockers = T.blockedBy(t);
       need(!blockers.length, `Blocked by open dependency: ${blockers.map(b => b.id).join(', ')}`);
       const at = now(); // server-generated
@@ -316,6 +319,70 @@
       audit(actor.id, 'reopened', t, `Reopened: ${reason.trim()}${reapprove ? ' (approvals must be obtained again before resubmission)' : ''}`);
       notify('reopened', t, [t.ownerId], `“${t.title}” was reopened: ${reason.trim()}`, `${t.id}:reopened:${t.reopenCount}`);
       commit();
+    },
+
+    /* ---------- Month-end close ---------- */
+    /* Add or edit an activity on the month-end close checklist. */
+    saveCloseItem(actor, input) {
+      if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can change the month-end close checklist.');
+      need(input && String(input.title || '').trim().length >= 3, 'Activity name is required.');
+      const s = D().settings; s.closeItems = s.closeItems || [];
+      const okUser = id => id && T.user(id) && T.user(id).active;
+      const ownerId = okUser(input.ownerId) ? input.ownerId : null;
+      const item = {
+        title: String(input.title).trim().slice(0, 160), module: String(input.module || '').trim().slice(0, 40), area: String(input.area || '').trim().slice(0, 40),
+        scheduleRequired: !!input.scheduleRequired, ownerId,
+        coOwners: (Array.isArray(input.coOwners) ? input.coOwners : []).filter((id, i, a) => okUser(id) && id !== ownerId && a.indexOf(id) === i),
+        deptId: T.dept(input.deptId) ? input.deptId : null,
+        dueWd: Math.min(Math.max(parseInt(input.dueWd, 10) || 5, 1), 23),
+        approverId: okUser(input.approverId) && input.approverId !== ownerId ? input.approverId : null,
+        active: input.active !== false
+      };
+      if (input.id) {
+        const ex = s.closeItems.find(x => x.id === input.id); need(ex, 'Activity not found.');
+        Object.assign(ex, item);
+        audit(actor.id, 'close_checklist', null, `Close activity updated: ${ex.sl}. ${ex.title}`); commit(); return ex;
+      }
+      const n = s.closeItems.reduce((m, x) => Math.max(m, parseInt(String(x.id).slice(2), 10) || 0), 0) + 1;
+      Object.assign(item, { id: 'ci' + n, sl: s.closeItems.reduce((m, x) => Math.max(m, x.sl || 0), 0) + 1 });
+      s.closeItems.push(item);
+      audit(actor.id, 'close_checklist', null, `Close activity added: ${item.sl}. ${item.title}`); commit(); return item;
+    },
+
+    /* Create one month's close tasks with the owners, due dates and approvers chosen for that month.
+       rows: [{ itemId, ownerId, coOwners, dueAt, approverId }]. Activities already created for the month are skipped. */
+    planClose(actor, period, rows, saveDefaults) {
+      if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can assign the month-end close.');
+      need(/^\d{4}-(0[1-9]|1[0-2])$/.test(period || ''), 'Choose a valid close month.');
+      need(Array.isArray(rows) && rows.length, 'Tick at least one activity.');
+      const done = new Set(T.closeTasks(period).map(t => t.closeRef.itemId));
+      const pairs = rows.filter(r => r && !done.has(r.itemId)).map(r => { const it = T.closeItems().find(x => x.id === r.itemId); need(it, 'Unknown close activity.'); return [it, r]; });
+      need(pairs.length, 'The ticked activities already have tasks for this month.');
+      const missing = pairs.filter(([, r]) => !r.ownerId || !T.user(r.ownerId) || !T.user(r.ownerId).active).map(([it]) => `${it.sl}. ${it.title}`);
+      need(!missing.length, `Choose an owner for: ${missing.slice(0, 4).join('; ')}${missing.length > 4 ? ` and ${missing.length - 4} more` : ''}.`);
+      const noDate = pairs.filter(([, r]) => !Number.isFinite(r.dueAt)).map(([it]) => `${it.sl}. ${it.title}`);
+      need(!noDate.length, `Set a due date for: ${noDate.slice(0, 4).join('; ')}.`);
+      const past = pairs.filter(([, r]) => r.dueAt <= now()).map(([it]) => `${it.sl}. ${it.title}`);
+      need(!past.length, `Due date is already past for: ${past.slice(0, 4).join('; ')}. Choose later dates.`);
+      const label = T.periodLabel(period), ids = [];
+      pairs.forEach(([it, r]) => {
+        const owner = T.user(r.ownerId);
+        const t = T.api.createTask(actor, {
+          title: `${it.title} — ${label} close`,
+          description: `Month-end close for ${label} · Activity ${it.sl}${it.module ? ` · ${it.module}` : ''}${it.area ? ` / ${it.area}` : ''}${it.scheduleRequired ? ' · Schedule required: attach the schedule before submitting.' : ''}`,
+          deptId: it.deptId || T.userDepts(owner)[0] || (D().departments[0] || {}).id, category: 'Month-end close', priority: 'high',
+          ownerId: owner.id, collaborators: r.coOwners || [], dueAt: r.dueAt, expectedTatHrs: 48,
+          approvals: r.approverId && r.approverId !== owner.id ? [{ label: 'Close review', approverId: r.approverId }] : [],
+          checklist: it.scheduleRequired ? ['Prepare the schedule', 'Reconcile the schedule with the GL', 'Attach the schedule to this task'] : [],
+          module: [it.module, it.area].filter(Boolean).join(' · '), scheduleRequired: it.scheduleRequired,
+          closeRef: { period, itemId: it.id, sl: it.sl }
+        });
+        ids.push(t.id);
+        if (saveDefaults) { it.ownerId = owner.id; it.coOwners = (r.coOwners || []).filter(id => id !== owner.id && T.user(id)); it.approverId = r.approverId || null; }
+      });
+      audit(actor.id, 'close_planned', null, `Month-end close ${label}: ${ids.length} task(s) assigned${saveDefaults ? '; owners saved as defaults' : ''}`);
+      commit();
+      return { created: ids.length, ids };
     },
 
     /* Set or change the approval steps a task needs before it can be submitted. */
@@ -688,6 +755,17 @@
       counts: { total: base.length, due: due.length, completed: completed.length, open: base.filter(T.isOpen).length, overdue: base.filter(t => T.isOverdue(t)).length, reopened: base.filter(t => t.reopenCount > 0).length, external: base.filter(t => t.externalDependency).length },
       delays, tasks: base
     };
+  };
+  /* ---------- month-end close helpers ---------- */
+  T.closeItems = () => (D().settings.closeItems || []).slice().sort((a, b) => (a.sl || 0) - (b.sl || 0));
+  T.closeTasks = period => D().tasks.filter(t => t.closeRef && t.closeRef.period === period && t.status !== 'cancelled');
+  T.periodLabel = period => { const [y, m] = String(period).split('-').map(Number); return new Date(Date.UTC(y, m - 1, 15)).toLocaleString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' }); };
+  /* The n-th working day (holidays and weekly offs skipped) of the month after `period` — when that month's close is due. */
+  T.closeDueDate = (period, n) => {
+    let [y, m] = String(period).split('-').map(Number); m += 1; if (m > 12) { m = 1; y += 1; }
+    let ms = T.istToEpoch(`${y}-${String(m).padStart(2, '0')}-01`, '12:00'), count = 0;
+    for (let i = 0; i < 70; i++, ms += DAY) { if (T.isWorkingDay(ms) && ++count >= n) break; }
+    return T.istDateStr(ms);
   };
   T.monthRange = (offset = 0) => {
     const p = T.epochToIstParts(now());

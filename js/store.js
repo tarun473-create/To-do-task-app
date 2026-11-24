@@ -59,6 +59,7 @@ window.T360 = window.T360 || {};
     ],
     kpiWeights: { onTime: 35, completion: 25, quality: 20, tat: 10, responsiveness: 10 },
     kpiPolicy: { excludeExternal: true, excludeCancelled: true },
+    closeItems: [],          // month-end close checklist (activities assigned month by month)
     rules: {
       ackReminderHrs: 4,
       dueReminderHrs: 24,

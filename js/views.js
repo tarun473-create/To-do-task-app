@@ -739,5 +739,142 @@
     $$('[data-jump]', v).forEach(c => c.onclick = () => { const el = $('#grp-' + order.indexOf(c.dataset.jump)); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   };
 
+  /* ================= MONTH-END CLOSE ================= */
+  V.close = (f, me) => {
+    const admin = T.canSeeAll(me);
+    const now = T.epochToIstParts(Date.now());
+    const key = (y, m) => `${y}-${String(m).padStart(2, '0')}`;
+    const shift = (y, m, k) => { m += k; while (m < 1) { m += 12; y--; } while (m > 12) { m -= 12; y++; } return key(y, m); };
+    const defaultPeriod = shift(now.y, now.m, now.d <= 20 ? -1 : 0); // early in a month you close the previous month
+    const period = /^\d{4}-\d{2}$/.test(f.period || '') ? f.period : defaultPeriod;
+    const months = [-4, -3, -2, -1, 0, 1].map(k => shift(now.y, now.m, k));
+    if (!months.includes(period)) months.unshift(period);
+    const tab = admin ? (f.tab || 'tracker') : 'tracker';
+    const items = T.closeItems();
+    const tasks = T.closeTasks(period).filter(t => T.canView(me, t));
+    const byItem = new Map(tasks.map(t => [t.closeRef.itemId, t]));
+    const label = T.periodLabel(period);
+    const users = D().users.filter(u => u.active);
+    const opt = (sel, list) => list.map(u => `<option value="${u.id}" ${sel === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
+    const names = ids => (ids || []).map(T.userName).join(', ');
+
+    const head = `<div class="page-head"><div><h1>Month-end close</h1><div class="sub">${esc(label)} close · ${items.filter(i => i.active).length} activities on the checklist</div></div>
+      <div class="actions"><select class="input" id="cl-month" style="width:auto">${months.map(p => `<option value="${p}" ${p === period ? 'selected' : ''}>${esc(T.periodLabel(p))} close</option>`).join('')}</select></div></div>
+      ${admin ? `<div class="tabs">${[['tracker', 'Close tracker'], ['plan', `Plan & assign ${label}`], ['items', 'Activities']].map(([k, l]) => `<button data-cltab="${k}" class="${tab === k ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>` : ''}`;
+
+    let body = '';
+    if (tab === 'tracker') {
+      const done = tasks.filter(t => t.status === 'completed').length;
+      const od = tasks.filter(t => T.isOverdue(t)).length;
+      const notYet = admin ? items.filter(i => i.active && !byItem.has(i.id)).length : 0;
+      const pctDone = tasks.length ? Math.round(100 * done / tasks.length) : 0;
+      const rows = admin ? items.filter(i => i.active || byItem.has(i.id)).map(i => ({ i, t: byItem.get(i.id) })) : tasks.map(t => ({ i: items.find(x => x.id === t.closeRef.itemId) || { sl: t.closeRef.sl, title: t.title }, t }));
+      body = `<div class="cards">
+          <div class="card stat green"><div class="label">Completed</div><div class="value">${done}/${tasks.length}</div><div class="hint">${pctDone}% of assigned</div></div>
+          <div class="card stat blue"><div class="label">Open</div><div class="value">${tasks.filter(T.isOpen).length}</div></div>
+          <div class="card stat violet"><div class="label">In approval / review</div><div class="value">${tasks.filter(t => ['in_approval', 'pending_review'].includes(t.status)).length}</div></div>
+          <div class="card stat red"><div class="label">Overdue</div><div class="value">${od}</div></div>
+          ${admin ? `<div class="card stat amber"><div class="label">Not assigned yet</div><div class="value">${notYet}</div>${notYet ? '<div class="hint">use Plan &amp; assign</div>' : ''}</div>` : ''}
+        </div>
+        <div class="card" style="margin-bottom:16px"><div class="bar" style="height:12px"><i style="width:${pctDone}%;background:var(--ok)"></i></div></div>
+        <div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th>#</th><th>Activity</th><th>Owner</th><th>Due (IST)</th><th>Status / where it is</th><th>Schedule</th></tr></thead><tbody>
+        ${rows.map(({ i, t }) => t ? `<tr class="click" data-task="${t.id}"><td class="tid">${esc(i.sl)}</td><td><div class="task-title">${esc(i.title)}</div><div class="tid">${t.id}${t.module ? ' · ' + esc(t.module) : ''}</div></td>
+            <td>${U.avatar(t.ownerId)}${t.collaborators.length ? `<div class="small muted">with ${esc(names(t.collaborators))}</div>` : ''}</td><td class="small nowrap">${T.fmt(t.dueAt)}</td><td>${U.status(t)}${U.stageLine(t)}</td>
+            <td class="small">${t.scheduleRequired ? ((t.attachments || []).length ? '<span class="pill s-completed">Attached</span>' : '<span class="pill s-on_hold">Required</span>') : '<span class="muted">—</span>'}</td></tr>`
+          : `<tr><td class="tid">${esc(i.sl)}</td><td><div class="task-title">${esc(i.title)}</div><div class="tid">${esc([i.module, i.area].filter(Boolean).join(' · '))}</div></td><td class="small muted">${i.ownerId ? esc(T.userName(i.ownerId)) + ' (default)' : 'No default owner'}</td><td class="small muted">WD ${i.dueWd || 5}</td><td><span class="pill s-assigned">Not assigned for ${esc(label)}</span></td><td class="small">${i.scheduleRequired ? 'Required' : '—'}</td></tr>`).join('') || `<tr><td colspan="6" class="empty">${admin ? 'No activities yet. Add them on the Activities tab.' : `You have no month-end close activities for ${esc(label)}.`}</td></tr>`}
+        </tbody></table></div></div>`;
+    }
+
+    if (tab === 'plan') {
+      const open = items.filter(i => i.active && !byItem.has(i.id));
+      const created = items.filter(i => byItem.has(i.id));
+      body = `<div class="alert info">Choose this month’s owner, due date and (optional) approver for each activity, then create the tasks. Owners are notified straight away. Due dates default to the activity’s working day (WD) after month end, skipping weekly offs and holidays.</div>
+        ${open.length ? `<div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="pl-all" checked title="Tick all"></th><th>#</th><th>Activity</th><th>Owner *</th><th>Co-owners</th><th>Due date</th><th>Approver (optional)</th><th>Schedule</th></tr></thead><tbody>
+        ${open.map(i => `<tr data-plan="${i.id}"><td><input type="checkbox" data-pl-on checked></td><td class="tid">${esc(i.sl)}</td>
+          <td style="min-width:220px"><div class="task-title">${esc(i.title)}</div><div class="tid">${esc([i.module, i.area].filter(Boolean).join(' · '))}</div></td>
+          <td><select class="input" data-pl-owner style="min-width:150px"><option value="">— choose —</option>${opt(i.ownerId, users)}</select></td>
+          <td>${coPicker(i.coOwners || [], users)}</td>
+          <td><input class="input" type="date" data-pl-due value="${T.closeDueDate(period, i.dueWd || 5)}" style="min-width:140px"><div class="small muted">WD ${i.dueWd || 5}</div></td>
+          <td><select class="input" data-pl-appr style="min-width:140px"><option value="">— none —</option>${opt(i.approverId, users)}</select></td>
+          <td class="small">${i.scheduleRequired ? 'Required' : '—'}</td></tr>`).join('')}
+        </tbody></table></div></div>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:12px">
+          <label class="small muted">Due time (IST) <input class="input" type="time" id="pl-time" value="18:00" style="width:auto"></label>
+          <label class="check" style="margin:0"><input type="checkbox" id="pl-save" checked> Save these owners and approvers as next month’s defaults</label>
+          <button class="btn primary" id="pl-go">Create tasks for ${esc(label)} close</button></div>
+        <p class="small muted">Co-owners can see and comment on the task; the owner submits it.</p>` : `<div class="card empty">${items.length ? `Every activity already has a task for ${esc(label)}. See the Close tracker.` : 'No activities yet. Add them on the Activities tab.'}</div>`}
+        ${created.length ? `<div class="section-title">Already assigned for ${esc(label)} (${created.length})</div><div class="small">${created.map(i => { const t = byItem.get(i.id); return `<a href="#" data-open="${t.id}">${esc(i.sl)}. ${esc(i.title)}</a> → ${esc(T.userName(t.ownerId))}`; }).join(' · ')}</div>` : ''}`;
+    }
+
+    if (tab === 'items') {
+      body = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap"><span class="small muted">The checklist every month starts from. Changes apply to months you assign after the change.</span><button class="btn primary" id="ci-add">＋ Add activity</button></div>
+        <div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th>#</th><th>Activity</th><th>Module</th><th>Department</th><th>Schedule</th><th>Default owner</th><th>Due</th><th>Approver</th><th></th></tr></thead><tbody>
+        ${items.map(i => `<tr style="${i.active ? '' : 'opacity:.55'}"><td class="tid">${esc(i.sl)}</td><td class="task-title">${esc(i.title)}${i.active ? '' : ' <span class="pill s-cancelled">inactive</span>'}</td>
+          <td class="small">${esc([i.module, i.area].filter(Boolean).join(' · ') || '—')}</td><td class="small">${esc(T.deptName(i.deptId))}</td><td class="small">${i.scheduleRequired ? 'Required' : '—'}</td>
+          <td class="small">${i.ownerId ? esc(T.userName(i.ownerId)) : '<span style="color:var(--danger)">not set</span>'}${(i.coOwners || []).length ? `<div class="muted">+ ${esc(names(i.coOwners))}</div>` : ''}</td>
+          <td class="small nowrap">WD ${i.dueWd || 5}</td><td class="small">${i.approverId ? esc(T.userName(i.approverId)) : '—'}</td><td><button class="btn sm" data-ci-edit="${i.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="9" class="empty">No activities yet.</td></tr>'}
+        </tbody></table></div></div>`;
+    }
+
+    $('#view').innerHTML = head + body;
+    const v = $('#view'); wireRows(v);
+    $('#cl-month').onchange = e => T.app.go('close', { period: e.target.value, tab });
+    $$('[data-cltab]', v).forEach(b => b.onclick = () => T.app.go('close', { period, tab: b.dataset.cltab }));
+    $$('[data-open]', v).forEach(a => a.onclick = e => { e.preventDefault(); U.openTask(a.dataset.open); });
+    $$('.co-pick', v).forEach(d => d.addEventListener('change', () => {
+      const picked = $$('[data-co-id]', d).filter(c => c.checked).map(c => c.parentElement.textContent.trim());
+      $('summary', d).textContent = picked.length ? picked.join(', ') : '＋ Add';
+    }));
+    if (tab === 'plan' && $('#pl-go')) {
+      $('#pl-all').onchange = e => $$('[data-pl-on]', v).forEach(c => c.checked = e.target.checked);
+      $('#pl-go').onclick = () => {
+        const time = $('#pl-time').value || '18:00';
+        const rows = $$('[data-plan]', v).filter(r => $('[data-pl-on]', r).checked).map(r => ({
+          itemId: r.dataset.plan, ownerId: $('[data-pl-owner]', r).value || null,
+          coOwners: $$('[data-co-id]', r).filter(c => c.checked).map(c => c.dataset.coId),
+          dueAt: $('[data-pl-due]', r).value ? T.istToEpoch($('[data-pl-due]', r).value, time) : NaN,
+          approverId: $('[data-pl-appr]', r).value || null
+        }));
+        if (!rows.length) return U.toast('Tick at least one activity.', true);
+        const btn = $('#pl-go'); btn.disabled = true; btn.textContent = 'Creating tasks…';
+        U.act(() => T.api.planClose(me, period, rows, $('#pl-save').checked)).then(r => {
+          if (r && r.created) { U.toast(`${r.created} task(s) created for ${label} close; owners notified`); T.app.go('close', { period, tab: 'tracker' }); }
+          else { const b2 = $('#pl-go'); if (b2) { b2.disabled = false; b2.textContent = `Create tasks for ${label} close`; } }
+        });
+      };
+    }
+    if (tab === 'items') {
+      $('#ci-add').onclick = () => closeItemModal(me, null);
+      $$('[data-ci-edit]', v).forEach(b => b.onclick = () => closeItemModal(me, b.dataset.ciEdit));
+    }
+  };
+  /* Compact multi-person picker: shows the chosen names; opens a tick list. */
+  function coPicker(selected, users) {
+    const names = selected.map(T.userName);
+    return `<details class="co-pick"><summary>${names.length ? esc(names.join(', ')) : '＋ Add'}</summary><div class="co-list">${users.map(u => `<label><input type="checkbox" data-co-id="${u.id}" ${selected.includes(u.id) ? 'checked' : ''}> ${esc(u.name)}</label>`).join('')}</div></details>`;
+  }
+  function closeItemModal(me, id) {
+    const i = id ? T.closeItems().find(x => x.id === id) : { title: '', module: '', area: '', scheduleRequired: false, ownerId: null, coOwners: [], deptId: null, dueWd: 5, approverId: null, active: true };
+    const users = D().users.filter(u => u.active);
+    U.modal(id ? `Edit activity ${i.sl}` : 'Add close activity', `<label class="field"><span>Activity *</span><input class="input" id="ci-t" value="${esc(i.title)}" maxlength="160"></label>
+      <div class="grid2"><label class="field"><span>Module</span><input class="input" id="ci-m" value="${esc(i.module)}" placeholder="e.g. Payable"></label><label class="field"><span>Sub-module / area</span><input class="input" id="ci-a" value="${esc(i.area)}" placeholder="e.g. Vendors"></label></div>
+      <div class="grid2"><label class="field"><span>Department</span><select class="input" id="ci-d"><option value="">Owner’s department</option>${D().departments.map(d => `<option value="${d.id}" ${i.deptId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
+      <label class="field"><span>Due on working day (after month end)</span><input class="input" type="number" min="1" max="23" id="ci-wd" value="${i.dueWd || 5}"></label></div>
+      <div class="grid2"><label class="field"><span>Default owner</span><select class="input" id="ci-o"><option value="">— none —</option>${users.map(u => `<option value="${u.id}" ${i.ownerId === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label>
+      <label class="field"><span>Default approver</span><select class="input" id="ci-ap"><option value="">— none —</option>${users.map(u => `<option value="${u.id}" ${i.approverId === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label></div>
+      <label class="field"><span>Default co-owners</span><div id="ci-co">${coPicker(i.coOwners || [], users)}</div></label>
+      <label class="check"><input type="checkbox" id="ci-s" ${i.scheduleRequired ? 'checked' : ''}> Schedule required (must be attached before the task can be submitted)</label>
+      ${id ? `<label class="check"><input type="checkbox" id="ci-act" ${i.active ? 'checked' : ''}> Active (on the checklist)</label>` : ''}`,
+      `<button class="btn" data-close>Cancel</button><button class="btn primary" id="ci-ok">Save</button>`, m => {
+        $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+        $$('.co-pick', m).forEach(d => d.addEventListener('change', () => { const n = $$('[data-co-id]', d).filter(c => c.checked).map(c => c.parentElement.textContent.trim()); $('summary', d).textContent = n.length ? n.join(', ') : '＋ Add'; }));
+        $('#ci-ok').onclick = () => U.act(() => T.api.saveCloseItem(me, {
+          id: id || undefined, title: $('#ci-t').value, module: $('#ci-m').value, area: $('#ci-a').value, deptId: $('#ci-d').value || null,
+          dueWd: +$('#ci-wd').value, ownerId: $('#ci-o').value || null, approverId: $('#ci-ap').value || null,
+          coOwners: $$('#ci-co [data-co-id]').filter(c => c.checked).map(c => c.dataset.coId), scheduleRequired: $('#ci-s').checked, active: id ? $('#ci-act').checked : true
+        }), 'Activity saved').then(ok => { if (ok) U.closeLayer(); });
+      });
+  }
+
   V.denied = msg => { $('#view').innerHTML = `<div class="card empty"><h2>Access restricted</h2><p>${esc(msg || 'Your role does not have access to this page.')}</p><a class="btn" href="#/dashboard">Back to dashboard</a></div>`; };
 })(window.T360);

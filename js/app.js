@@ -20,6 +20,7 @@
     { id: 'team', label: 'Team & Workload', ico: '👥', roles: ['super_admin', 'dept_head', 'manager'] },
     { id: 'kpi', label: 'KPI & Performance', ico: '📈' },
     { id: 'followups', label: 'Follow-up Centre', ico: '🔔' },
+    { id: 'close', label: 'Month-end Close', ico: '📘' },
     { id: 'recurring', label: 'Recurring Tasks', ico: '↻' },
     { section: 'Insights' },
     { id: 'reports', label: 'Reports & Analytics', ico: '📊' },

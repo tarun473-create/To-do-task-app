@@ -372,3 +372,12 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .app.booting .sidebar, .app.booting .topbar { display: none; }
 .boot-card { max-width: 560px; margin: 8vh auto; }
 .boot-card h2 { margin-bottom: 8px; }
+
+/* Compact multi-person picker (month-end close) */
+.co-pick { position: relative; min-width: 150px; max-width: 220px; }
+.co-pick summary { cursor: pointer; list-style: none; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.co-pick summary::-webkit-details-marker { display: none; }
+.co-pick[open] summary { border-color: var(--primary); }
+.co-list { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; width: 240px; max-height: 240px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(0,0,0,.15); padding: 6px; }
+.co-list label { display: flex; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.co-list label:hover { background: var(--surface-2); }

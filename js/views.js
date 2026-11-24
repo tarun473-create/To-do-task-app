@@ -752,7 +752,7 @@
     const items = T.closeItems();
     const assignerOf = items.filter(i => i.active && i.assignerId === me.id);
     const canPlan = admin || assignerOf.length > 0;
-    const tab = admin ? (f.tab || 'tracker') : canPlan && f.tab === 'plan' ? 'plan' : 'tracker';
+    const tab = f.tab === 'dash' ? 'dash' : f.tab === 'plan' && canPlan ? 'plan' : f.tab === 'items' && admin ? 'items' : 'tracker';
     const tasks = T.closeTasks(period).filter(t => T.canView(me, t));
     const byItem = new Map(tasks.map(t => [t.closeRef.itemId, t]));
     const label = T.periodLabel(period);
@@ -762,7 +762,7 @@
 
     const head = `<div class="page-head"><div><h1>Month-end close</h1><div class="sub">${esc(label)} close · ${items.filter(i => i.active).length} activities on the checklist</div></div>
       <div class="actions"><select class="input" id="cl-month" style="width:auto">${months.map(p => `<option value="${p}" ${p === period ? 'selected' : ''}>${esc(T.periodLabel(p))} close</option>`).join('')}</select></div></div>
-      ${canPlan ? `<div class="tabs">${[['tracker', 'Close tracker'], ['plan', `Plan & assign ${label}`], ...(admin ? [['items', 'Activities']] : [])].map(([k, l]) => `<button data-cltab="${k}" class="${tab === k ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>` : ''}`;
+      <div class="tabs">${[['tracker', 'Close tracker'], ['dash', 'Dashboard'], ...(canPlan ? [['plan', `Plan & assign ${label}`]] : []), ...(admin ? [['items', 'Activities']] : [])].map(([k, l]) => `<button data-cltab="${k}" class="${tab === k ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>`;
 
     let body = '';
     if (tab === 'tracker') {
@@ -779,12 +779,13 @@
           ${admin ? `<div class="card stat amber"><div class="label">Not assigned yet</div><div class="value">${notYet}</div>${notYet ? '<div class="hint">use Plan &amp; assign</div>' : ''}</div>` : ''}
         </div>
         <div class="card" style="margin-bottom:16px"><div class="bar" style="height:12px"><i style="width:${pctDone}%;background:var(--ok)"></i></div></div>
-        <div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th>#</th><th>Activity</th><th>Assigner</th><th>Owner</th><th>Approver</th><th>Due (IST)</th><th>Status / where it is</th><th>Schedule</th></tr></thead><tbody>
-        ${rows.map(({ i, t }) => t ? `<tr class="click" data-task="${t.id}"><td class="tid">${esc(i.sl)}</td><td><div class="task-title">${esc(i.title)}</div><div class="tid">${t.id}${t.module ? ' · ' + esc(t.module) : ''}</div></td>
+        ${admin && tasks.some(t => T.isOpen(t) && t.status !== 'pending_review') ? `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px"><button class="btn" id="tl-change" disabled>📅 Change due dates</button><span class="small muted">Tick open activities to move their due dates (one or many).</span></div>` : ''}
+        <div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th>${admin ? '<input type="checkbox" id="tl-all" title="Select all open"> ' : ''}#</th><th>Activity</th><th>Assigner</th><th>Owner</th><th>Approver</th><th>Due (IST)</th><th>Status / where it is</th><th>Schedule</th></tr></thead><tbody>
+        ${rows.map(({ i, t }) => t ? `<tr class="click" data-task="${t.id}"><td class="tid nowrap">${admin && T.isOpen(t) && t.status !== 'pending_review' ? `<input type="checkbox" data-tl="${t.id}"> ` : ''}${esc(i.sl)}</td><td><div class="task-title">${esc(i.title)}</div><div class="tid">${t.id}${t.module ? ' · ' + esc(t.module) : ''}</div></td>
             <td class="small nowrap">${esc(T.userName(t.createdBy))}</td>
             <td>${U.avatar(t.ownerId)}${t.collaborators.length ? `<div class="small muted">with ${esc(names(t.collaborators))}</div>` : ''}</td>
             <td class="small nowrap">${(t.approvals || []).length ? t.approvals.map(a => `${esc(T.userName(a.approverId))} <span class="pill ${a.status === 'approved' ? 's-completed' : a.status === 'pending' ? 's-in_approval' : a.status === 'rejected' ? 's-reopened' : 's-assigned'}">${esc(a.status)}</span>`).join('<br>') : '<span class="muted">—</span>'}</td>
-            <td class="small nowrap">${T.fmt(t.dueAt)}</td><td>${U.status(t)}${U.stageLine(t)}</td>
+            <td class="small nowrap">${T.fmt(t.dueAt)}${(t.deadlineChanges || []).length ? `<div class="muted">was ${T.fmtDate(t.originalDueAt)}</div>` : ''}</td><td>${U.status(t)}${U.stageLine(t)}</td>
             <td class="small">${t.scheduleRequired ? ((t.attachments || []).length ? '<span class="pill s-completed">Attached</span>' : '<span class="pill s-on_hold">Required</span>') : '<span class="muted">—</span>'}</td></tr>`
           : `<tr><td class="tid">${esc(i.sl)}</td><td><div class="task-title">${esc(i.title)}</div><div class="tid">${esc([i.module, i.area].filter(Boolean).join(' · '))}</div></td><td class="small muted">${i.assignerId ? esc(T.userName(i.assignerId)) : '—'}</td><td class="small muted">${i.ownerId ? esc(T.userName(i.ownerId)) + ' (default)' : 'No default owner'}</td><td class="small muted">${T.closeApprover(i, i.ownerId) ? esc(T.userName(T.closeApprover(i, i.ownerId))) : '—'}</td><td class="small muted">WD ${i.dueWd || 5}</td><td><span class="pill s-assigned">Not assigned for ${esc(label)}</span></td><td class="small">${i.scheduleRequired ? 'Required' : '—'}</td></tr>`).join('') || `<tr><td colspan="8" class="empty">${admin ? 'No activities yet. Add them on the Activities tab.' : `You have no month-end close activities for ${esc(label)}.`}</td></tr>`}
         </tbody></table></div></div>`;
@@ -815,6 +816,62 @@
         ${created.length ? `<div class="section-title">Already assigned for ${esc(label)} (${created.length})</div><div class="small">${created.map(i => { const t = byItem.get(i.id); return `<a href="#" data-open="${t.id}">${esc(i.sl)}. ${esc(i.title)}</a> → ${esc(T.userName(t.ownerId))}`; }).join(' · ')}</div>` : ''}`;
     }
 
+    if (tab === 'dash') {
+      const [py, pm] = period.split('-').map(Number);
+      const win = [-5, -4, -3, -2, -1, 0].map(k => shift(py, pm, k));
+      const all = D().tasks.filter(t => t.closeRef && win.includes(t.closeRef.period) && t.status !== 'cancelled' && T.canView(me, t));
+      const cur = all.filter(t => t.closeRef.period === period);
+      const tally = list => {
+        const c = { assigned: list.length, on_time: 0, late: 0, overdue: 0, open: 0, delay: 0 };
+        list.forEach(t => { const o = T.closeOutcome(t); c[o.key]++; if (o.key === 'late') c.delay += o.delayMs; });
+        const decided = c.on_time + c.late + c.overdue;
+        c.rate = decided ? Math.round(100 * c.on_time / decided) : null;
+        c.avgDelay = c.late ? c.delay / c.late : null;
+        return c;
+      };
+      const k = tally(cur);
+      const pctTxt = r => r == null ? '—' : r + '%';
+      const days = ms => ms == null ? '—' : ms < T.DAY ? `${Math.max(1, Math.round(ms / T.HOUR))} h` : `${(ms / T.DAY).toFixed(1)} d`;
+      const trend = win.map(p => ({ p, c: tally(all.filter(t => t.closeRef.period === p)) }));
+      const group = (keyOf, nameOf) => {
+        const m = new Map();
+        all.forEach(t => { const key = keyOf(t); if (!m.has(key)) m.set(key, []); m.get(key).push(t); });
+        return [...m.entries()].map(([key, list]) => ({ key, name: nameOf(key), now: tally(list.filter(t => t.closeRef.period === period)), six: tally(list) }))
+          .filter(g => g.now.assigned || g.six.assigned).sort((a, b) => (a.six.rate ?? 101) - (b.six.rate ?? 101));
+      };
+      const owners = group(t => t.ownerId, T.userName), depts = group(t => t.deptId, T.deptName);
+      const rowsFor = list => list.map(g => `<tr><td>${esc(g.name)}</td><td>${g.now.assigned}</td><td style="color:var(--ok)">${g.now.on_time}</td><td style="color:var(--danger)">${g.now.late}</td><td style="color:var(--danger)"><b>${g.now.overdue}</b></td><td>${g.now.open}</td>
+        <td><b>${pctTxt(g.now.rate)}</b></td><td>${pctTxt(g.six.rate)} <span class="small muted">(${g.six.on_time}/${g.six.on_time + g.six.late + g.six.overdue})</span></td><td class="small">${days(g.six.avgDelay)}</td></tr>`).join('') || '<tr><td colspan="9" class="empty">No month-end tasks yet.</td></tr>';
+      const itemIds = [...new Set(all.map(t => t.closeRef.itemId))];
+      const gridItems = itemIds.map(id => items.find(i => i.id === id) || { id, sl: (all.find(t => t.closeRef.itemId === id).closeRef.sl), title: all.find(t => t.closeRef.itemId === id).title.replace(/ — .*$/, '') }).sort((a, b) => (a.sl || 0) - (b.sl || 0));
+      const cell = t => {
+        if (!t) return '<td class="small muted" style="text-align:center">–</td>';
+        const o = T.closeOutcome(t), mark = o.revised ? '<sup title="Due date was changed">*</sup>' : '';
+        const style = { on_time: 'background:var(--ok-soft);color:var(--ok)', late: 'background:var(--danger-soft);color:var(--danger)', overdue: 'background:var(--danger);color:#fff', open: 'background:var(--info-soft);color:var(--info)' }[o.key];
+        const txt = { on_time: '✓', late: '+' + days(o.delayMs), overdue: '! ' + days(o.delayMs), open: '•' }[o.key];
+        const tip = { on_time: 'On time', late: 'Submitted late', overdue: 'Overdue, not submitted', open: 'Open, not due yet' }[o.key] + ` — ${T.userName(t.ownerId)}, due ${T.fmt(t.dueAt)}`;
+        return `<td class="click small" data-task="${t.id}" title="${esc(tip)}" style="text-align:center;font-weight:600;${style}">${txt}${mark}</td>`;
+      };
+      body = `<div class="cards">
+          <div class="card stat"><div class="label">Assigned · ${esc(label)}</div><div class="value">${k.assigned}</div></div>
+          <div class="card stat green"><div class="label">On time</div><div class="value">${k.on_time}</div></div>
+          <div class="card stat red"><div class="label">Late</div><div class="value">${k.late}</div><div class="hint">avg delay ${days(k.avgDelay)}</div></div>
+          <div class="card stat red"><div class="label">Overdue (not submitted)</div><div class="value">${k.overdue}</div></div>
+          <div class="card stat blue"><div class="label">Open, not due yet</div><div class="value">${k.open}</div></div>
+          <div class="card stat ${k.rate == null ? '' : k.rate >= 90 ? 'green' : k.rate >= 75 ? 'amber' : 'red'}"><div class="label">On-time rate</div><div class="value">${pctTxt(k.rate)}</div><div class="hint">of activities due</div></div>
+        </div>
+        <div class="dash-grid">
+          <div class="card span-5"><div class="card-head"><h2>On-time rate — last 6 closes</h2></div>
+            <div class="vbars">${trend.map(x => `<div class="col" data-period="${x.p}"><b>${pctTxt(x.c.rate)}</b><i style="height:${x.c.rate ?? 0}%;background:${x.c.rate == null ? 'var(--grey)' : x.c.rate >= 90 ? 'var(--ok)' : x.c.rate >= 75 ? 'var(--warn)' : 'var(--danger)'}"></i><span>${esc(T.periodLabel(x.p))}<br>${x.c.assigned} tasks</span></div>`).join('')}</div></div>
+          <div class="card span-7" style="padding:0"><div class="card-head" style="padding:14px 16px 0"><h2>By department</h2><span class="small muted">this month · last 6 closes</span></div><div class="table-wrap"><table><thead><tr><th>Department</th><th>Assigned</th><th>On time</th><th>Late</th><th>Overdue</th><th>Open</th><th>On-time %</th><th>6 closes</th><th>Avg delay</th></tr></thead><tbody>${rowsFor(depts)}</tbody></table></div></div>
+          <div class="card span-12" style="padding:0"><div class="card-head" style="padding:14px 16px 0"><h2>By owner</h2><span class="small muted">lowest on-time rate first</span></div><div class="table-wrap"><table><thead><tr><th>Owner</th><th>Assigned</th><th>On time</th><th>Late</th><th>Overdue</th><th>Open</th><th>On-time %</th><th>6 closes</th><th>Avg delay</th></tr></thead><tbody>${rowsFor(owners)}</tbody></table></div></div>
+          <div class="card span-12" style="padding:0"><div class="card-head" style="padding:14px 16px 0"><h2>Each activity, month by month</h2><span class="legend"><span><i style="background:var(--ok)"></i>✓ on time</span><span><i style="background:var(--danger-soft)"></i>+ late by</span><span><i style="background:var(--danger)"></i>! overdue</span><span><i style="background:var(--info)"></i>• open</span><span>* due date changed</span></span></div>
+            <div class="table-wrap"><table><thead><tr><th>#</th><th>Activity</th>${win.map(p => `<th style="text-align:center">${esc(T.periodLabel(p))}</th>`).join('')}<th>On time</th></tr></thead><tbody>
+            ${gridItems.map(i => { const ts = win.map(p => all.find(t => t.closeRef.period === p && t.closeRef.itemId === i.id)); const c = tally(ts.filter(Boolean)); return `<tr><td class="tid">${esc(i.sl)}</td><td class="small" style="min-width:220px">${esc(i.title)}</td>${ts.map(cell).join('')}<td class="small nowrap"><b>${c.on_time}</b>/${c.on_time + c.late + c.overdue}</td></tr>`; }).join('') || '<tr><td colspan="9" class="empty">No month-end tasks in these months yet.</td></tr>'}
+            </tbody></table></div></div>
+        </div>
+        <p class="small muted">On time = submitted for final review on or before the due date in force (after any approved date change). Late = submitted after it. Overdue = past the due date and not submitted yet.</p>`;
+    }
     if (tab === 'items') {
       body = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap"><span class="small muted">The checklist every month starts from. Changes apply to months you assign after the change.</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="ci-xl-down">⬇ Download Excel template</button><label class="btn">⬆ Upload checklist (Excel)<input type="file" id="ci-xl-up" accept=".xlsx,.xls,.csv" hidden></label><button class="btn primary" id="ci-add">＋ Add activity</button></span></div>
         <div class="card" style="padding:0"><div class="table-wrap"><table><thead><tr><th>#</th><th>Activity</th><th>Module</th><th>Department</th><th>Schedule</th><th>Assigner</th><th>Default owner</th><th>Approver</th><th>Due</th><th></th></tr></thead><tbody>
@@ -835,6 +892,14 @@
       const picked = $$('[data-co-id]', d).filter(c => c.checked).map(c => c.parentElement.textContent.trim());
       $('summary', d).textContent = picked.length ? picked.join(', ') : '＋ Add';
     }));
+    if (tab === 'dash') $$('[data-period]', v).forEach(c => c.onclick = () => T.app.go('close', { period: c.dataset.period, tab: 'dash' }));
+    if (tab === 'tracker' && $('#tl-change')) {
+      const boxes = () => $$('[data-tl]', v), sel = () => boxes().filter(b => b.checked).map(b => b.dataset.tl);
+      const sync = () => { const n = sel().length; $('#tl-change').disabled = !n; $('#tl-change').textContent = n ? `📅 Change due dates (${n} selected)` : '📅 Change due dates'; };
+      boxes().forEach(b => { b.addEventListener('click', e => e.stopPropagation()); b.addEventListener('change', sync); });
+      $('#tl-all').onchange = e => { boxes().forEach(b => b.checked = e.target.checked); sync(); };
+      $('#tl-change').onclick = () => timelineModal(me, sel(), period);
+    }
     if (tab === 'plan' && $('#pl-xl-down')) {
       $('#pl-xl-down').onclick = () => downloadCloseTemplate(period).catch(e => U.toast(e.message, true));
       $('#pl-xl-up').onchange = e => { const fl = e.target.files[0]; if (fl) uploadPlan(me, fl, v); e.target.value = ''; };
@@ -1034,6 +1099,27 @@
       const box = $('#pl-upload-notes');
       box.innerHTML = `<div class="alert ${notes.length ? 'warn' : 'info'}">Filled ${filled} activit${filled === 1 ? 'y' : 'ies'} from <b>${esc(file.name)}</b>. Check the table, then click <b>Create tasks</b>.${notes.length ? '<br>' + notes.slice(0, 20).map(esc).join('<br>') + (notes.length > 20 ? `<br>…and ${notes.length - 20} more` : '') : ''}</div>`;
     }).catch(e => U.toast(e.message, true));
+  }
+
+  /* Super Admin: move the due dates of the selected month-end tasks. */
+  function timelineModal(me, ids, period) {
+    const first = T.task(ids[0]);
+    U.modal(`Change timeline — ${ids.length} activit${ids.length === 1 ? 'y' : 'ies'}`, `
+      <div class="alert info">The original due date stays on each task. Owners are notified of the new date.</div>
+      <label class="check"><input type="radio" name="tl-mode" value="shift" checked> Move by&nbsp;<input class="input" type="number" id="tl-days" value="2" min="-30" max="30" style="width:80px">&nbsp;working day(s) <span class="small muted">(negative = earlier; holidays and weekly offs skipped)</span></label>
+      <label class="check"><input type="radio" name="tl-mode" value="set"> Set all to&nbsp;<input class="input" type="date" id="tl-date" value="${T.istDateStr(first.dueAt + T.DAY)}" style="width:auto">&nbsp;<input class="input" type="time" id="tl-time" value="${T.istTimeStr(first.dueAt)}" style="width:auto"></label>
+      <label class="field"><span>Attributable to *</span><select class="input" id="tl-attr"><option value="manager">Management decision / timeline revised — KPI uses the new date</option><option value="external">External dependency — KPI uses the new date</option><option value="employee">Employee request — KPI keeps the original date</option></select></label>
+      <label class="field"><span>Reason *</span><textarea class="input" id="tl-reason" placeholder="e.g. Audit timelines moved; close extended by two working days"></textarea></label>
+      <div class="small muted">${ids.map(id => { const t = T.task(id); return `${esc(t.closeRef ? t.closeRef.sl + '. ' : '')}${esc(t.title.replace(/ — .*$/, ''))} — now ${T.fmt(t.dueAt)}`; }).slice(0, 12).join('<br>')}${ids.length > 12 ? `<br>…and ${ids.length - 12} more` : ''}</div>`,
+      `<button class="btn" data-close>Cancel</button><button class="btn primary" id="tl-ok">Change due dates</button>`, m => {
+        $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+        $('#tl-ok').onclick = () => {
+          const mode = $('input[name="tl-mode"]:checked', m).value;
+          const spec = mode === 'set' ? { mode, dueAt: $('#tl-date').value && $('#tl-time').value ? T.istToEpoch($('#tl-date').value, $('#tl-time').value) : NaN } : { mode, days: parseInt($('#tl-days').value, 10) };
+          U.act(() => T.api.bulkChangeDeadline(me, ids, spec, $('#tl-reason').value, $('#tl-attr').value))
+            .then(r => { if (r) { U.closeLayer(); U.toast(`Due date changed for ${r.changed} activit${r.changed === 1 ? 'y' : 'ies'}; owners notified`); } });
+        };
+      });
   }
 
   /* Compact multi-person picker: shows the chosen names; opens a tick list. */

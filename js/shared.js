@@ -192,7 +192,9 @@
 
   /* ---------------- wire the engine API to the shared store ---------------- */
   const APP_ACTIONS = new Set(['createTask', 'duplicate', 'saveUser', 'saveDept', 'renameDept', 'updateSettings', 'setLeave', 'saveRecurring', 'toggleRecurring', 'saveCloseItem', 'planClose', 'importCloseItems']);
-  const lockFor = (name, args) => APP_ACTIONS.has(name) || typeof args[0] !== 'string' || !/^T360-\d+$/.test(args[0]) ? ['app/main'] : ['tasks/' + args[0]];
+  const lockFor = (name, args) => name === 'bulkChangeDeadline' && Array.isArray(args[0])
+    ? ['app/main', ...[...new Set(args[0])].filter(id => /^T360-\d+$/.test(id)).map(id => 'tasks/' + id)]
+    : APP_ACTIONS.has(name) || typeof args[0] !== 'string' || !/^T360-\d+$/.test(args[0]) ? ['app/main'] : ['tasks/' + args[0]];
   const original = Object.assign({}, T.api);
   Object.keys(original).forEach(name => {
     if (name === 'markRead') return;

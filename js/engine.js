@@ -372,7 +372,7 @@
       pairs.forEach(([it, r]) => {
         const owner = T.user(r.ownerId);
         const assigner = r.assignerId && T.user(r.assignerId) && T.user(r.assignerId).active ? r.assignerId : (it.assignerId || actor.id);
-        const t = T.api.createTask(actor, {
+        const t = T._core.createTask(actor, {
           title: `${it.title} — ${label} close`, assignedBy: assigner, reviewerId: assigner,
           description: `Month-end close for ${label} · Activity ${it.sl}${it.module ? ` · ${it.module}` : ''}${it.area ? ` / ${it.area}` : ''}${it.scheduleRequired ? ' · Schedule required: attach the schedule before submitting.' : ''}`,
           deptId: it.deptId || T.userDepts(owner)[0] || (D().departments[0] || {}).id, category: 'Month-end close', priority: 'high',
@@ -388,6 +388,30 @@
       audit(actor.id, 'close_planned', null, `Month-end close ${label}: ${ids.length} task(s) assigned${saveDefaults ? '; owners saved as defaults' : ''}`);
       commit();
       return { created: ids.length, ids };
+    },
+
+    /* Super Admin / Department Head: move the due dates of several tasks at once (e.g. a month-end close).
+       spec = { mode: 'set', dueAt } or { mode: 'shift', days } (working days, + later / - earlier). */
+    bulkChangeDeadline(actor, ids, spec, reason, attribution) {
+      if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can change timelines in bulk.');
+      need(Array.isArray(ids) && ids.length >= 1 && ids.length <= 100, 'Select between 1 and 100 tasks.');
+      need(reason && String(reason).trim().length >= 5, 'A reason is required for a timeline change.');
+      need(['employee', 'manager', 'external'].includes(attribution), 'Select who the change is attributable to.');
+      need(spec && (spec.mode === 'set' || spec.mode === 'shift'), 'Choose a new date or a number of working days.');
+      const plan = [...new Set(ids)].map(id => {
+        const t = T.task(id); need(t, `Task ${id} not found.`);
+        need(T.isOpen(t) && t.status !== 'pending_review', `${t.id} is already submitted or closed — its timeline cannot change.`);
+        let due;
+        if (spec.mode === 'set') { need(Number.isFinite(spec.dueAt), 'Choose the new due date.'); due = spec.dueAt; }
+        else { const n = parseInt(spec.days, 10); need(n && Math.abs(n) <= 30, 'Move by 1 to 30 working days.'); due = T.addWorkingDays(t.dueAt, n); }
+        need(due > now(), `${t.id}: the new due date ${T.fmt(due)} is already past.`);
+        return [t, due];
+      });
+      plan.forEach(([t, due]) => { if (due !== t.dueAt) T._core.changeDeadline(actor, t.id, due, reason, attribution); });
+      const changed = plan.filter(([t, due]) => t.dueAt === due).length;
+      audit(actor.id, 'timeline_changed', null, `Timeline changed for ${changed} task(s) (${spec.mode === 'set' ? `to ${T.fmt(spec.dueAt)}` : `${spec.days > 0 ? '+' : ''}${spec.days} working day(s)`}, ${attribution}-attributed): ${String(reason).trim()}`);
+      commit();
+      return { changed };
     },
 
     /* Set or change the approval steps a task needs before it can be submitted. */
@@ -522,7 +546,7 @@
     duplicate(actor, id) {
       const t = T.task(id); if (!T.canManage(actor, t)) deny();
       const span = Math.max(t.dueAt - t.createdAt, DAY);
-      return T.api.createTask(actor, {
+      return T._core.createTask(actor, {
         title: t.title + ' (copy)', description: t.description, deptId: t.deptId, category: t.category, priority: t.priority,
         ownerId: t.ownerId, dueAt: now() + span, expectedTatHrs: t.expectedTatHrs, reminder: t.reminder, kpi: t.kpi,
         kpiWeight: t.kpiWeight, checklist: t.checklist.map(c => c.text)
@@ -691,6 +715,10 @@
     }
   };
 
+  /* The rules' own functions, for calls from one rule to another. Adapters (shared page, server
+     client) wrap T.api for the UI; internal calls must not go through those wrappers. */
+  T._core = Object.assign({}, T.api);
+
   /* ---------------- recurring generation ---------------- */
   function periodFor(r, at) {
     const p = T.epochToIstParts(at);
@@ -792,6 +820,22 @@
       s.closeItems.push(item);
       return { item, created: true };
   };
+  /* Add (or with n < 0, subtract) working days, keeping the time of day. */
+  T.addWorkingDays = (ms, n) => {
+    let d = ms, left = Math.abs(n); const step = n > 0 ? DAY : -DAY;
+    while (left > 0) { d += step; if (T.isWorkingDay(d)) left--; }
+    return d;
+  };
+  /* How a month-end close task went: on time / late (submitted after the due date in force) / overdue / open. */
+  T.closeOutcome = (t, at = now()) => {
+    if (t.status === 'cancelled') return { key: 'cancelled' };
+    const revised = (t.deadlineChanges || []).length > 0;
+    if (t.firstSubmittedAt) {
+      const late = t.firstSubmittedAt - t.dueAt;
+      return late <= 0 ? { key: 'on_time', revised } : { key: 'late', delayMs: late, revised };
+    }
+    return at > t.dueAt ? { key: 'overdue', delayMs: at - t.dueAt, revised } : { key: 'open', revised };
+  };
   /* Approver for an activity: its own choice, 'none' for no approval, otherwise the owner's reporting manager. */
   T.closeApprover = (item, ownerId) => {
     if (item && item.approverId === 'none') return null;
@@ -834,7 +878,7 @@
         if (!owner) return;
         r.lastKey = per.key;
         try {
-          const t = T.api.createTask(creator, { title: `${r.title} — ${per.key.replace(/^(W|monthly:|quarterly:|annual:)/, '')}`, description: r.description || `Recurring ${r.frequency} activity.`, deptId: r.deptId, category: r.category, priority: r.priority, ownerId: r.ownerId, dueAt: per.due, expectedTatHrs: r.tatHrs, recurringId: r.id, allowPastDue: true, reminder: 'standard', approvals: r.approvals || [] });
+          const t = T._core.createTask(creator, { title: `${r.title} — ${per.key.replace(/^(W|monthly:|quarterly:|annual:)/, '')}`, description: r.description || `Recurring ${r.frequency} activity.`, deptId: r.deptId, category: r.category, priority: r.priority, ownerId: r.ownerId, dueAt: per.due, expectedTatHrs: r.tatHrs, recurringId: r.id, allowPastDue: true, reminder: 'standard', approvals: r.approvals || [] });
           d.audit.push(Object.freeze({ at, by: 'system', action: 'recurring', taskId: t.id, detail: `Generated from recurring template ${r.id}` }));
         } catch (e) { console.warn('Recurring generation failed', r.id, e.message); }
       });

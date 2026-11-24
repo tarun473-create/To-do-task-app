@@ -61,7 +61,29 @@ This loads the demonstration data (labelled **DEMO DATA**), with you as the Supe
 
 To start over later, run `drop schema task360 cascade;` in the Supabase SQL editor, then run migrate and seed again.
 
+## Step 2b: Move your existing workspace (optional)
+
+If you already use Task360 on the Claude team page (or the standalone demo), bring everything across: people, departments, the month-end close checklist, tasks with their full history, and the audit trail.
+
+1. In the current Task360, open **Admin Settings → Data → Download a copy (JSON)**.
+2. Run migrate (Step 2), then, **instead of** `db:seed`:
+
+```bash
+DATABASE_URL="<…>" npm run db:import -- --file task360-backup.json
+```
+
+The import refuses to run on a database that already has people, so it can't load anything twice.
+
 ## Step 3: Set up sign-in
+
+**Email + password (simplest; no Claude, Microsoft or email setup needed)**
+- Each person's **username is their work email**, for example `jalaj.sharma@sunsure.in`.
+- A Super Admin opens **Team & Workload → Sign-in status** and clicks **Set temporary password** next to a person. The password is shown once; share it privately, for example in person or by Teams chat. **Copy all** copies the sign-in page address, username and password together.
+- At first sign-in the person must choose their own password (at least 10 characters, with letters and a number).
+- Forgotten password: the Super Admin clicks **Reset password** for that person.
+- This needs `SUPABASE_SERVICE_ROLE_KEY` set on the server (Step 4).
+
+
 
 **Email link (always available)**
 1. Go to Supabase → **Authentication → URL Configuration**. Set **Site URL** to your app address (for example `https://task360.yourcompany.com`) and add `https://task360.yourcompany.com/auth/callback` under **Redirect URLs**.

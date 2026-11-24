@@ -2,7 +2,7 @@
   "name": "task360-server",
   "version": "1.0.0",
   "private": true,
-  "description": "Task360 — Team Performance & Accountability Hub (server edition: Next.js + Supabase)",
+  "description": "Task360 \u2014 Team Performance & Accountability Hub (server edition: Next.js + Supabase)",
   "scripts": {
     "sync": "node scripts/sync-client.mjs",
     "predev": "npm run sync",
@@ -12,9 +12,12 @@
     "start": "next start -p ${PORT:-3000}",
     "typecheck": "npm run sync && tsc --noEmit",
     "db:migrate": "node scripts/migrate.mjs",
-    "db:seed": "node scripts/seed.mjs"
+    "db:seed": "node scripts/seed.mjs",
+    "db:import": "node scripts/import.mjs"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
     "@supabase/supabase-js": "2.119.2",

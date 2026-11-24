@@ -65,6 +65,7 @@
       T.store.data = json.data; version = json.data.version;
       return true;
     },
-    async runEngine() { return (await call('/api/engine/run', {})).sent || 0; }
+    async runEngine() { return (await call('/api/engine/run', {})).sent || 0; },
+    async setPassword(userId) { return call('/api/admin/set-password', { userId }); }
   };
 })(window.T360);

@@ -9,7 +9,7 @@ export class ConflictError extends Error { constructor(m = 'Data changed concurr
 const ms = (v: any) => (v == null ? null : new Date(Number(v)));
 const toUser = (r: any) => ({
   id: r.id, name: r.name, role: r.role, deptId: r.dept_id, depts: r.depts && r.depts.length ? r.depts : (r.dept_id ? [r.dept_id] : []), managerId: r.manager_id, teams: r.teams || [],
-  email: r.email || '', active: r.active, onLeave: r.on_leave, backupId: r.backup_id
+  email: r.email || '', active: r.active, onLeave: r.on_leave, backupId: r.backup_id, linked: !!r.auth_id
 });
 
 export type Loaded = { data: Dataset; versions: Map<string, number> };
@@ -46,7 +46,7 @@ export async function loadAll(sql: Sql = db()): Promise<Loaded> {
   };
 }
 
-const stable = (o: unknown) => JSON.stringify(o);
+const stable = (o: unknown) => JSON.stringify(o, (k, v) => (k === 'linked' ? undefined : v));
 
 /* Write every difference between `before` and `after` in one transaction. Throws ConflictError
    (→ caller reloads and retries) if another request changed the same rows first. */

@@ -11,6 +11,14 @@ import { supabaseServer } from './supabase';
 export type Actor = { id: string; name: string; role: string; email: string };
 export const DEV_COOKIE = 't360_dev_user';
 
+/* True when the signed-in person still has a temporary password and must set their own. */
+export async function mustChangePassword(): Promise<boolean> {
+  if (!supabaseConfigured()) return false;
+  const supabase = await supabaseServer();
+  const { data } = await supabase.auth.getUser();
+  return !!(data.user && data.user.user_metadata && data.user.user_metadata.must_change_password);
+}
+
 export async function getActor(): Promise<Actor | null> {
   const sql = db();
   if (env.devLogin) {

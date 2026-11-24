@@ -1,7 +1,7 @@
 /* Serves the Task360 app shell (same HTML/CSS/JS as the standalone build) with the signed-in
    user's data embedded, so the first screen renders without an extra round trip. */
 import { NextResponse } from 'next/server';
-import { getActor } from '@/lib/auth';
+import { getActor, mustChangePassword } from '@/lib/auth';
 import { loadAll } from '@/lib/repo';
 import { buildBootstrap } from '@/lib/bootstrap';
 import { SHELL_HTML } from '@/lib/generated/client';
@@ -14,6 +14,7 @@ const safeJson = (o: unknown) => JSON.stringify(o).replace(/</g, '\\u003c').repl
 export async function GET() {
   const actor = await getActor();
   if (!actor) return NextResponse.redirect(`${env.appUrl}/login?denied=1`);
+  if (await mustChangePassword()) return NextResponse.redirect(`${env.appUrl}/account/password?first=1`);
   const { data } = await loadAll();
   const boot = await buildBootstrap(data, actor.id);
   const config = { mode: 'server', meId: actor.id };

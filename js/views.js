@@ -330,8 +330,8 @@
         ${admin ? `<td class="nowrap"><button class="btn sm" data-add-member="${x.d.id}">＋ Add member</button> <button class="btn sm" data-rename="${x.d.id}">Rename</button></td>` : ''}</tr>`).join('')}
       </tbody></table></div></div>
       ${admin && T.isShared() ? '<div id="tm-requests"></div>' : ''}
-      ${T.isShared() && admin ? `<div class="card" style="padding:0;margin-bottom:16px"><div class="card-head" style="padding:14px 16px 0"><h2>Sign-in status</h2><span class="small muted">People sign in with their Claude account (same work email)</span></div><div class="table-wrap"><table><thead><tr><th>Member</th><th>Role</th><th>Work email</th><th>Status</th></tr></thead><tbody>
-        ${D().users.filter(u => u.active).map(u => `<tr><td>${U.avatar(u.id)}</td><td class="small">${T.ROLES[u.role]}</td><td class="small">${esc(u.email || '—')}</td><td>${u.claudeId ? '<span class="pill s-completed">Signed in</span>' : '<span class="pill s-assigned">Not signed in yet</span>'}</td></tr>`).join('')}
+      ${(T.isShared() || T.isServer()) && admin ? `<div class="card" style="padding:0;margin-bottom:16px"><div class="card-head" style="padding:14px 16px 0"><h2>Sign-in status</h2><span class="small muted">${T.isServer() ? 'Username = work email. Give each person a temporary password; they choose their own at first sign-in.' : 'People sign in with their Claude account (same work email)'}</span></div><div class="table-wrap"><table><thead><tr><th>Member</th><th>Role</th><th>Work email (username)</th><th>Status</th>${T.isServer() ? '<th></th>' : ''}</tr></thead><tbody>
+        ${D().users.filter(u => u.active).map(u => `<tr><td>${U.avatar(u.id)}</td><td class="small">${T.ROLES[u.role]}</td><td class="small">${esc(u.email || '—')}</td><td>${u.claudeId || u.linked ? '<span class="pill s-completed">Signed in</span>' : '<span class="pill s-assigned">Not signed in yet</span>'}</td>${T.isServer() ? `<td class="nowrap">${u.email ? `<button class="btn sm" data-setpw="${u.id}">${u.linked ? 'Reset password' : 'Set temporary password'}</button>` : '<span class="small muted">add email first</span>'}</td>` : ''}</tr>`).join('')}
       </tbody></table></div></div>` : ''}
       <div class="card" style="padding:0"><div class="card-head" style="padding:14px 16px 0"><h2>Team members &amp; workload</h2><span class="small muted">${rows.length} employee(s)</span></div><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Department</th><th>Manager</th><th>Active</th><th>Overdue</th><th>Critical</th><th>Due today</th><th>In review</th><th>KPI (${range.label})</th><th>Leave / backup</th><th></th></tr></thead><tbody>
       ${rows.map(r => `<tr><td>${U.avatar(r.u.id)}<div class="small muted">${T.ROLES[r.u.role]}</div></td><td class="small">${esc(T.deptNames(r.u))}</td><td class="small">${esc(T.userName(r.u.managerId))}</td>
@@ -342,6 +342,21 @@
       </tbody></table></div>${rows.length ? '' : `<div class="empty">No team members yet.${admin ? ' Click “＋ Add team member” to add the first one.' : ''}</div>`}</div>`;
     const v = $('#view');
     if (admin && T.isShared()) renderRequests(me);
+    if (admin && T.isServer()) $$('[data-setpw]', v).forEach(b => b.onclick = () => {
+      const u = T.user(b.dataset.setpw);
+      U.modal(`${u.linked ? 'Reset' : 'Set'} password — ${u.name}`, `<p>This creates a new temporary password for <b>${esc(u.name)}</b>. Any password they had stops working. They must choose their own password the first time they sign in.</p>`,
+        `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pw-go">Create temporary password</button>`, m => {
+          $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+          $('#pw-go').onclick = () => { $('#pw-go').disabled = true; T.remote.setPassword(u.id).then(r => {
+            const url = location.origin + '/login';
+            $('.modal-body', m).innerHTML = `<div class="alert info">Share these privately with ${esc(u.name)} (for example in person or by Teams chat). This password is shown only once.</div>
+              <dl class="meta-grid"><dt>Sign-in page</dt><dd><b>${esc(url)}</b></dd><dt>Username</dt><dd><b>${esc(r.email)}</b></dd><dt>Temporary password</dt><dd><b style="font-family:ui-monospace,Menlo,monospace;font-size:16px" id="pw-val">${esc(r.password)}</b></dd></dl>
+              <button class="btn sm" id="pw-copy">Copy all</button>`;
+            $('.modal-foot', m).innerHTML = '<button class="btn primary" data-close>Done</button>'; $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+            $('#pw-copy').onclick = () => navigator.clipboard.writeText(`Task360 sign-in: ${url}\nUsername: ${r.email}\nTemporary password: ${r.password}`).then(() => U.toast('Copied')).catch(() => U.toast('Select the text and copy it manually.', true));
+          }).catch(e => { U.toast(e.message, true); const g = $('#pw-go'); if (g) g.disabled = false; }); };
+        });
+    });
     if (admin) {
       $('#tm-add-user').onclick = () => editUser(me, null);
       $('#tm-add-dept').onclick = () => deptModal(me, null);

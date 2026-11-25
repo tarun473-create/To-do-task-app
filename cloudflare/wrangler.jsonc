@@ -8,7 +8,7 @@
   "keep_vars": true,
   "assets": { "directory": "./public", "binding": "ASSETS" },
   "d1_databases": [
-    { "binding": "DB", "database_name": "task360", "database_id": "PASTE-YOUR-D1-DATABASE-ID-HERE", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "task360", "database_id": "0d4a0410-628a-4fa6-94bc-5eb79557adcf", "migrations_dir": "migrations" }
   ],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "task360-files" }],
   "triggers": { "crons": ["*/10 * * * *"] },

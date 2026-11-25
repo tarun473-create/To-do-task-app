@@ -45,6 +45,10 @@
 
   T.ui.uploadAttachment = async (_me, taskId, file) => {
     if (file.size > 25 * 1024 * 1024) throw new Error('Files must be 25 MB or smaller.');
+    if (T.config.uploadMode === 'direct') { // Cloudflare edition: the Worker stores the file in R2 after checking permission
+      const fd = new FormData(); fd.append('taskId', taskId); fd.append('file', file);
+      return (await call('/api/attachments', fd, true)).result;
+    }
     // 1) server checks permission and issues a short-lived signed upload URL (private bucket)
     const sign = await call('/api/attachments/sign', { taskId, name: file.name, size: file.size });
     // 2) the browser uploads the file straight to storage

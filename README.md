@@ -14,7 +14,9 @@ A team task management, accountability and KPI tracking system for department he
 | Attachments | File names only | Private storage, signed download links |
 | Live link | GitHub Pages: `https://tarun473-create.github.io/To-do-task-app/` (after Pages is switched on) | Your own address, for example on Vercel |
 
-Both editions use the same screens and the same rules engine (`js/engine.js`). The server runs that engine itself, so every permission, reason requirement and timestamp is enforced on the server. **To deploy the server edition, follow [`server/README.md`](server/README.md).**
+**Cloudflare edition ([`cloudflare/`](cloudflare/README.md)):** the same app on Cloudflare Workers, D1 (database), R2 (files) and Cron Triggers (reminders), with sign-in built in: Microsoft 365 directly, or email + password with a company starting password that must be changed at first sign-in. No other services needed.
+
+All editions use the same screens and the same rules engine (`js/engine.js`). The server runs that engine itself, so every permission, reason requirement and timestamp is enforced on the server. **To deploy the server edition, follow [`server/README.md`](server/README.md).**
 
 ## Shared team page on claude.ai (no hosting needed)
 

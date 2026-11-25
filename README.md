@@ -44,6 +44,13 @@ The task panel shows a workflow tracker: every stage, who it is waiting on, sinc
 
 Time spent waiting on approvers is not counted against the employee's turnaround time (TAT) or on-time KPI.
 
+## Delegation chain and self-assigned tasks
+
+- **Delegate:** whoever a task is assigned to (any role) can pass the work on to anyone with **⤷ Delegate**, with their own due date and instructions. That person can delegate again (up to 10 hand-offs).
+- **Done flows back up:** the last person clicks **Mark done**. It goes to the person who delegated it, who checks it and either sends it back or clicks **Mark done & send to …**, which also marks their own task done and passes it up. This repeats until the person who created the first task closes it.
+- **Everyone in the chain sees the whole chain** on the task (who gave it to whom, status and due date of each step, and who has it now). A task cannot be marked done while its delegated work is still open, and cancelling a task cancels the work delegated from it.
+- **Self-assigned tasks:** a Reporting Manager or Super Admin can assign a task to themselves. With no one else to review it, the button is **Complete task** and it closes straight away.
+
 ## Run the standalone demo
 
 ```bash

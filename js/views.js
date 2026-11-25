@@ -311,7 +311,7 @@
     const people = T.visibleUsers(me).filter(u => u.role === 'employee' || u.role === 'manager');
     const range = T.monthRange(0);
     const rows = people.map(u => {
-      const ts = D().tasks.filter(t => t.ownerId === u.id && !t.archived);
+      const ts = T.visibleTasks(me).filter(t => t.ownerId === u.id && !t.archived);
       const open = ts.filter(T.isOpen);
       return { u, open: open.length, od: open.filter(t => T.isOverdue(t)).length, crit: open.filter(t => t.priority === 'critical').length, today: open.filter(T.dueToday).length, review: ts.filter(t => t.status === 'pending_review').length, k: T.computeKpi(u.id, range.from, range.to) };
     });
@@ -319,7 +319,7 @@
     const depts = T.visibleDepts(me).map(d => ({
       d, managers: D().users.filter(u => u.active && u.role === 'manager' && (u.teams || []).includes(d.id)),
       members: D().users.filter(u => u.active && T.userDepts(u).includes(d.id)).length,
-      open: D().tasks.filter(t => t.deptId === d.id && T.isOpen(t) && !t.archived).length
+      open: T.visibleTasks(me).filter(t => t.deptId === d.id && T.isOpen(t) && !t.archived).length
     }));
     $('#view').innerHTML = `<div class="page-head"><div><h1>Team management &amp; workload</h1><div class="sub">Check capacity before assigning · manage leave and backups${admin ? ' · add team members and departments' : ''}</div></div>
       ${admin ? `<div class="actions"><button class="btn primary" id="tm-add-user">＋ Add team member</button><button class="btn" id="tm-add-dept">＋ Add department</button></div>` : ''}</div>
@@ -383,7 +383,7 @@
 
   /* ================= FOLLOW-UP CENTRE ================= */
   V.followups = (f, me) => {
-    const all = D().notifications.filter(n => T.canSeeAll(me) || n.to === me.id || (me.role === 'manager' && T.visibleUsers(me).some(u => u.id === n.to)));
+    const all = D().notifications.filter(n => T.seesAll(me) || n.to === me.id || T.visibleUsers(me).some(u => u.id === n.to));
     const list = all.filter(n => !f.type || n.type === f.type).sort((a, b) => b.at - a.at).slice(0, 300);
     const R = D().settings.rules;
     const types = [...new Set(all.map(n => n.type))];
@@ -414,7 +414,7 @@
 
   /* ================= RECURRING ================= */
   V.recurring = (f, me) => {
-    const list = D().recurring.filter(r => T.canSeeAll(me) || (me.role === 'manager' && T.managerTeams(me).includes(r.deptId)) || r.ownerId === me.id);
+    const list = D().recurring.filter(r => T.seesAll(me) || r.ownerId === me.id || r.createdBy === me.id || T.reportees(me).has(r.ownerId));
     const fr = r => r.frequency === 'weekly' ? `Weekly · ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][r.weekday ?? 5]}` : r.frequency === 'daily' ? 'Daily · working days' : `${r.frequency[0].toUpperCase() + r.frequency.slice(1)} · day ${r.dayOfMonth}`;
     $('#view').innerHTML = `<div class="page-head"><div><h1>Recurring tasks</h1><div class="sub">Templates generate a new task each period automatically</div></div>
       <div class="actions">${T.canCreate(me) ? '<button class="btn primary" id="rec-new">＋ New recurring task</button>' : ''}<a class="btn" href="${T.drill({ preset: 'recurring' })}">View generated instances</a></div></div>
@@ -491,7 +491,7 @@
   V.audit = (f, me) => {
     if (me.role === 'employee') return V.denied();
     const q = (f.q || '').toLowerCase();
-    const list = D().audit.filter(a => !a.taskId || T.canView(me, T.task(a.taskId)) || T.canSeeAll(me))
+    const list = D().audit.filter(a => T.seesAll(me) ? true : a.taskId ? T.canView(me, T.task(a.taskId)) : false)
       .filter(a => !f.action || a.action === f.action)
       .filter(a => !q || `${a.taskId} ${a.detail} ${T.userName(a.by)}`.toLowerCase().includes(q))
       .sort((a, b) => b.at - a.at);
@@ -839,7 +839,7 @@
     if (tab === 'dash') {
       const [py, pm] = period.split('-').map(Number);
       const win = [-5, -4, -3, -2, -1, 0].map(k => shift(py, pm, k));
-      const all = D().tasks.filter(t => t.closeRef && win.includes(t.closeRef.period) && t.status !== 'cancelled' && T.canView(me, t));
+      const all = T.visibleTasks(me).filter(t => t.closeRef && win.includes(t.closeRef.period) && t.status !== 'cancelled');
       const cur = all.filter(t => t.closeRef.period === period);
       const tally = list => {
         const c = { assigned: list.length, on_time: 0, late: 0, overdue: 0, open: 0, delay: 0 };

@@ -9,6 +9,11 @@
   const { HOUR, DAY } = T;
   const D = () => T.store.data;
   const now = () => Date.now();
+  /* mode 'standalone' (browser-only demo) or 'server' (rules executed authoritatively on the server) */
+  T.config = Object.assign({ mode: 'standalone' }, (typeof window !== 'undefined' && window.T360_CONFIG) || {});
+  T.isServer = () => T.config.mode === 'server';
+  /* 'shared': the published team page — data in the page's shared database, sign-in via Claude accounts. */
+  T.isShared = () => T.config.mode === 'shared';
 
   /* ---------------- lookups ---------------- */
   T.user = id => D().users.find(u => u.id === id);
@@ -42,17 +47,56 @@
   T.overdueDays = (t, at = now()) => T.isOverdue(t, at) ? T.workingDaysBetween(t.dueAt, at) : 0;
   T.dueToday = t => T.isOpen(t) && T.istDateStr(t.dueAt) === T.istDateStr(now());
   T.ageDays = t => Math.floor(((t.completedAt || now()) - t.createdAt) / DAY);
-  T.actualTatHrs = t => t.firstSubmittedAt ? (t.firstSubmittedAt - t.assignedAt) / HOUR : null;
+  /* Approval-before-submission workflow helpers */
+  T.hasApprovals = t => (t.approvals || []).length > 0;
+  T.approvalsDone = t => T.hasApprovals(t) && t.approvals.every(a => a.status === 'approved');
+  T.currentApproval = t => t.status === 'in_approval' ? (t.approvals || []).find(a => a.status === 'pending') || null : null;
+  /* Time the task spent waiting on approvers before first submission. KPI fairness: this time is
+     not counted against the employee's turnaround or on-time delivery. */
+  T.approvalWaitMs = t => (t.approvalLog || []).reduce((sum, e) => {
+    if (!e.requestedAt) return sum;
+    const end = Math.min(e.decidedAt || now(), t.firstSubmittedAt || Infinity);
+    return sum + Math.max(0, end - e.requestedAt);
+  }, 0);
+  T.actualTatHrs = t => t.firstSubmittedAt ? Math.max(0, t.firstSubmittedAt - t.assignedAt - T.approvalWaitMs(t)) / HOUR : null;
+  T.submittedOnTime = t => !!t.firstSubmittedAt && t.firstSubmittedAt - T.approvalWaitMs(t) <= t.kpiDueAt;
+  /* A decision this person must take: an approval step assigned to them, or a final review they can do. */
+  T.waitingOnMe = (t, me) => {
+    const a = T.currentApproval(t);
+    if (a) return a.approverId === me.id;
+    return t.status === 'pending_review' && t.ownerId !== me.id && T.canManage(me, t);
+  };
+  /* Where a task is in its workflow right now, and who it is waiting on. */
+  T.stageOf = t => {
+    const lastHold = [...(t.history || [])].reverse().find(h => h.action === 'on_hold');
+    switch (t.status) {
+      case 'assigned': return { stage: 'Awaiting acknowledgement', waitingOn: t.ownerId, since: t.assignedAt };
+      case 'acknowledged': case 'in_progress': case 'reopened':
+        if (T.hasApprovals(t) && !T.approvalsDone(t)) return { stage: t.status === 'reopened' ? 'Rework, then send for approval' : 'Working, then send for approval', waitingOn: t.ownerId, since: t.startedAt || t.ackAt || t.assignedAt };
+        if (T.approvalsDone(t)) return { stage: 'Approved, ready to submit', waitingOn: t.ownerId, since: Math.max(...t.approvals.map(a => a.decidedAt || 0)) };
+        return { stage: t.status === 'reopened' ? 'Rework after review' : t.status === 'acknowledged' ? 'Acknowledged, not started' : 'In progress', waitingOn: t.ownerId, since: t.startedAt || t.ackAt || t.assignedAt };
+      case 'on_hold': return { stage: 'On hold', waitingOn: t.ownerId, since: lastHold ? lastHold.at : t.assignedAt };
+      case 'in_approval': { const a = T.currentApproval(t); return { stage: `Approval: ${a ? a.label : ''}`, waitingOn: a ? a.approverId : null, since: a ? a.requestedAt : null }; }
+      case 'pending_review': return { stage: 'Final review', waitingOn: t.reviewerId || t.createdBy, since: t.submittedAt };
+      case 'completed': return { stage: 'Completed', waitingOn: null, since: t.completedAt };
+      default: return { stage: 'Cancelled', waitingOn: null, since: null };
+    }
+  };
   T.blockedBy = t => (t.dependsOn || []).map(T.task).filter(x => x && T.isOpen(x));
 
   /* ---------------- permissions (enforced in every API call) ---------------- */
-  T.managerTeams = u => u.role === 'manager' ? (u.teams || [u.deptId]) : [];
+  /* A person can belong to several departments (u.depts); deptId is kept as their first one. */
+  T.userDepts = u => (u && Array.isArray(u.depts) && u.depts.length) ? u.depts : (u && u.deptId ? [u.deptId] : []);
+  T.deptNames = u => T.userDepts(u).map(T.deptName).join(', ') || '—';
+  /* A Reporting Manager runs the departments they are in (or an explicit list in u.teams). */
+  T.managerTeams = u => u.role === 'manager' ? ((Array.isArray(u.teams) && u.teams.length) ? u.teams : T.userDepts(u)) : [];
   T.canSeeAll = u => u.role === 'super_admin' || u.role === 'dept_head';
   T.reportsTo = (emp, mgr) => emp && emp.managerId === mgr.id;
   T.canView = (u, t) => {
     if (!u || !t) return false;
     if (T.canSeeAll(u)) return true;
     if (t.ownerId === u.id || t.createdBy === u.id || t.reviewerId === u.id || (t.collaborators || []).includes(u.id)) return true;
+    if ((t.approvals || []).some(a => a.approverId === u.id)) return true;
     if (u.role === 'manager') return T.managerTeams(u).includes(t.deptId) || T.reportsTo(T.user(t.ownerId), u);
     return false;
   };
@@ -63,18 +107,30 @@
     return false;
   };
   T.canCreate = u => u && u.role !== 'employee';
+  /* Validate approval steps: up to 5, each with an active approver who is not the assignee. */
+  T.cleanApprovals = (steps, ownerId) => {
+    if (!Array.isArray(steps)) return [];
+    const out = steps.filter(s => s && s.approverId).slice(0, 5).map((s, i) => {
+      const u = T.user(s.approverId);
+      if (!u || !u.active) { const e = new Error('Select an active approver for every approval step.'); e.code = 400; throw e; }
+      if (u.id === ownerId) { const e = new Error(`${u.name} is the assignee and cannot also approve the task.`); e.code = 400; throw e; }
+      return { id: 's' + (i + 1), label: String(s.label || '').trim().slice(0, 60) || `Approval ${i + 1}`, approverId: u.id, status: 'waiting', requestedAt: null, decidedAt: null, note: '', by: null };
+    });
+    return out;
+  };
   T.isOwner = (u, t) => u && t && t.ownerId === u.id;
   T.visibleTasks = u => D().tasks.filter(t => T.canView(u, t));
   T.visibleUsers = u => {
     if (T.canSeeAll(u)) return D().users.filter(x => x.active);
-    if (u.role === 'manager') return D().users.filter(x => x.active && (x.id === u.id || x.managerId === u.id || (x.role === 'employee' && T.managerTeams(u).includes(x.deptId))));
+    if (u.role === 'manager') { const mine = T.managerTeams(u); return D().users.filter(x => x.active && (x.id === u.id || x.managerId === u.id || (x.role === 'employee' && T.userDepts(x).some(d => mine.includes(d))))); }
     return [u];
   };
-  T.assignableUsers = u => T.visibleUsers(u).filter(x => x.role === 'employee' || (T.canSeeAll(u) && x.role === 'manager'));
+  /* Super Admin / Department Head: anyone. Reporting Manager: employees in their departments and managers who report to them. */
+  T.assignableUsers = u => T.visibleUsers(u).filter(x => T.canSeeAll(u) || x.role === 'employee' || (x.role === 'manager' && x.managerId === u.id));
   T.visibleDepts = u => {
     if (T.canSeeAll(u)) return D().departments;
     if (u.role === 'manager') return D().departments.filter(d => T.managerTeams(u).includes(d.id));
-    return D().departments.filter(d => d.id === u.deptId);
+    return D().departments.filter(d => T.userDepts(u).includes(d.id));
   };
 
   function deny(msg) { const e = new Error(msg || 'You are not authorised to perform this action.'); e.code = 403; throw e; }
@@ -95,7 +151,8 @@
     overdue: 'Overdue notice', escalation1: 'First escalation', escalation2: 'Second escalation', reassigned: 'Reassignment',
     review: 'Review request', approved: 'Approved', reopened: 'Reopened', daily_followup: 'Daily follow-up', comment: 'Comment',
     weekly_summary: 'Weekly performance summary', monthly_kpi: 'Monthly KPI report', digest: 'Daily management digest',
-    deadline_changed: 'Deadline changed', cancelled: 'Cancelled', recurring: 'Recurring task created', backup: 'Backup assignment'
+    deadline_changed: 'Deadline changed', cancelled: 'Cancelled', recurring: 'Recurring task created', backup: 'Backup assignment',
+    approval: 'Approval request', approval_done: 'Approvals complete', approval_rejected: 'Approval rejected', approval_reminder: 'Approval reminder'
   };
   T.notifTypeLabel = t => TYPE_LABEL[t] || t;
 
@@ -108,9 +165,12 @@
     const ch = d.settings.channels;
     const channels = [];
     if (ch.inApp) channels.push({ channel: 'in-app', status: 'delivered' });
-    // Email / Teams require the server connector (Microsoft Graph); in this standalone build they are logged as simulated.
-    if (ch.email) channels.push({ channel: 'email', status: 'simulated' });
-    if (ch.teams) channels.push({ channel: 'teams', status: 'simulated' });
+    // Email / Teams: queued for the server delivery worker (Microsoft Graph); simulated in the standalone build.
+    const ext = T.isServer() ? 'queued' : 'simulated';
+    if (!T.isShared()) { // the shared team page has in-app notifications only
+      if (ch.email) channels.push({ channel: 'email', status: ext });
+      if (ch.teams) channels.push({ channel: 'teams', status: ext });
+    }
     recipients.forEach(uid => {
       d.notifications.push({
         id: 'n' + now().toString(36) + (notifySeq++), type, taskId: task ? task.id : null, to: uid,
@@ -123,7 +183,12 @@
   }
   T.notify = notify;
   T.mgrOf = uid => { const u = T.user(uid); return u ? u.managerId : null; };
-  T.deptHeads = () => D().users.filter(u => u.role === 'dept_head' && u.active).map(u => u.id);
+  /* Second-level escalations and month-end reports go to department heads; when there is no
+     department head (e.g. the Super Admin heads the department), they go to the Super Admin(s). */
+  T.deptHeads = () => {
+    const heads = D().users.filter(u => u.role === 'dept_head' && u.active).map(u => u.id);
+    return heads.length ? heads : D().users.filter(u => u.role === 'super_admin' && u.active).map(u => u.id);
+  };
   T.myNotifications = uid => D().notifications.filter(n => n.to === uid).sort((a, b) => b.at - a.at);
 
   /* ---------------- task API ---------------- */
@@ -144,12 +209,15 @@
       // If owner is on leave, route to backup while preserving ownership history
       let finalOwner = owner, backupNote = '';
       if (owner.onLeave && owner.backupId) { finalOwner = T.user(owner.backupId); backupNote = ` (backup for ${owner.name}, on leave)`; }
+      const approvals = T.cleanApprovals(input.approvals, finalOwner.id);
+      const onBehalf = input.assignedBy && input.assignedBy !== actor.id && T.canSeeAll(actor) && T.user(input.assignedBy) && T.user(input.assignedBy).active ? input.assignedBy : null;
+      const assigner = onBehalf || actor.id;
       const t = {
         id: 'T360-' + String(d.seq++).padStart(4, '0'),
         title: input.title.trim(), description: (input.description || '').trim(),
         deptId: input.deptId || finalOwner.deptId, category: input.category || 'Ad hoc', priority: pr.id,
-        ownerId: finalOwner.id, createdBy: actor.id, reviewerId: input.reviewerId || actor.id,
-        collaborators: input.collaborators || [],
+        ownerId: finalOwner.id, createdBy: assigner, reviewerId: (input.reviewerId && T.user(input.reviewerId) ? input.reviewerId : assigner),
+        collaborators: (Array.isArray(input.collaborators) ? input.collaborators : []).filter((id, i, a) => id !== finalOwner.id && T.user(id) && T.user(id).active && a.indexOf(id) === i),
         createdAt: at, assignedAt: at, startDate: input.startDate || T.istDateStr(at),
         dueAt: input.dueAt, originalDueAt: input.dueAt, kpiDueAt: input.dueAt,
         expectedTatHrs: Number(input.expectedTatHrs) || pr.tat,
@@ -161,10 +229,14 @@
         comments: [], attachments: [],
         checklist: (input.checklist || []).filter(Boolean).map((text, i) => ({ id: 'c' + (i + 1), text, done: false })),
         ownership: [{ userId: finalOwner.id, from: at, to: null, reason: 'Initial assignment' + backupNote }],
-        deadlineChanges: [], history: []
+        deadlineChanges: [], history: [],
+        approvals, approvalLog: [], approvalRound: 0,
+        module: String(input.module || '').slice(0, 80), scheduleRequired: !!input.scheduleRequired,
+        closeRef: input.closeRef && /^\d{4}-\d{2}$/.test(input.closeRef.period || '') ? { period: input.closeRef.period, itemId: String(input.closeRef.itemId || ''), sl: input.closeRef.sl || null } : null
       };
       d.tasks.push(t);
-      audit(actor.id, 'created', t, `Task created and assigned to ${finalOwner.name}${backupNote}; due ${T.fmt(t.dueAt)}`);
+      audit(actor.id, 'created', t, `Task ${onBehalf ? `created by ${actor.name} on behalf of ${T.userName(onBehalf)} and ` : ''}assigned to ${finalOwner.name}${backupNote}; due ${T.fmt(t.dueAt)}` +
+        (approvals.length ? `; approval before submission: ${approvals.map(a => `${a.label} (${T.userName(a.approverId)})`).join(' → ')}` : ''));
       notify('assigned', t, [finalOwner.id, ...t.collaborators], `New task assigned: ${t.title} — due ${T.fmt(t.dueAt)}`, `${t.id}:assigned`);
       commit();
       return t;
@@ -213,6 +285,11 @@
       const t = T.task(id); if (!T.isOwner(actor, t)) deny('Only the assignee can submit completion.');
       need(['acknowledged', 'in_progress', 'reopened', 'assigned', 'on_hold'].includes(t.status), 'Task cannot be submitted in its current state.');
       need(remarks && remarks.trim().length >= 5, 'Completion remarks are required.');
+      if (T.hasApprovals(t) && !T.approvalsDone(t)) {
+        const next = t.approvals.find(a => a.status !== 'approved');
+        need(false, `This task needs approval before submission. Send it for approval first (next: ${next.label}, ${T.userName(next.approverId)}).`);
+      }
+      if (t.scheduleRequired) need((t.attachments || []).length > 0, 'This activity needs its schedule. Attach the schedule file before submitting.');
       const blockers = T.blockedBy(t);
       need(!blockers.length, `Blocked by open dependency: ${blockers.map(b => b.id).join(', ')}`);
       const at = now(); // server-generated
@@ -239,9 +316,177 @@
       need(['pending_review', 'completed'].includes(t.status), 'Only submitted or completed tasks can be reopened.');
       need(reason && reason.trim().length >= 5, 'A reason is required to reopen.');
       t.status = 'reopened'; t.reopenCount++; t.submittedAt = null; t.completedAt = null; t.progress = Math.min(t.progress, 80);
-      audit(actor.id, 'reopened', t, `Reopened: ${reason.trim()}`);
+      const reapprove = T.hasApprovals(t);
+      if (reapprove) t.approvals.forEach(a => { a.status = 'waiting'; a.requestedAt = null; a.decidedAt = null; a.note = ''; a.by = null; });
+      audit(actor.id, 'reopened', t, `Reopened: ${reason.trim()}${reapprove ? ' (approvals must be obtained again before resubmission)' : ''}`);
       notify('reopened', t, [t.ownerId], `“${t.title}” was reopened: ${reason.trim()}`, `${t.id}:reopened:${t.reopenCount}`);
       commit();
+    },
+
+    /* ---------- Month-end close ---------- */
+    /* Add or edit an activity on the month-end close checklist. */
+    saveCloseItem(actor, input) {
+      if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can change the month-end close checklist.');
+      const { item, created } = T.upsertCloseItem(input);
+      audit(actor.id, 'close_checklist', null, `Close activity ${created ? 'added' : 'updated'}: ${item.sl}. ${item.title}`); commit(); return item;
+    },
+
+    /* Excel upload of the checklist: rows are matched to existing activities by Sl (or by name); new ones are added. */
+    importCloseItems(actor, rows) {
+      if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can change the month-end close checklist.');
+      need(Array.isArray(rows) && rows.length, 'The file has no activities.');
+      need(rows.length <= 300, 'Up to 300 activities per upload.');
+      rows.forEach((r, i) => need(r && String(r.title || '').trim().length >= 3, `Row ${i + 1}: activity name is required.`));
+      let added = 0, updated = 0;
+      rows.forEach(r => {
+        const ex = T.closeItems().find(x => (r.sl && x.sl === r.sl) || x.title.toLowerCase() === String(r.title).trim().toLowerCase());
+        const { created } = T.upsertCloseItem(Object.assign({}, r, { id: ex ? ex.id : undefined }));
+        if (created) added++; else updated++;
+      });
+      audit(actor.id, 'close_checklist', null, `Close checklist uploaded from Excel: ${added} added, ${updated} updated`); commit();
+      return { added, updated };
+    },
+
+    /* Create one month's close tasks with the owners, due dates and approvers chosen for that month.
+       rows: [{ itemId, ownerId, coOwners, dueAt, approverId }]. Activities already created for the month are skipped. */
+    planClose(actor, period, rows, saveDefaults) {
+      const admin = T.canSeeAll(actor);
+      need(/^\d{4}-(0[1-9]|1[0-2])$/.test(period || ''), 'Choose a valid close month.');
+      need(Array.isArray(rows) && rows.length, 'Tick at least one activity.');
+      const done = new Set(T.closeTasks(period).map(t => t.closeRef.itemId));
+      const pairs = rows.filter(r => r && !done.has(r.itemId)).map(r => { const it = T.closeItems().find(x => x.id === r.itemId); need(it, 'Unknown close activity.'); return [it, r]; });
+      need(pairs.length, 'The ticked activities already have tasks for this month.');
+      // A Reporting Manager may assign only the activities where they are the assigner.
+      if (!admin) {
+        const notMine = pairs.filter(([it]) => it.assignerId !== actor.id).map(([it]) => `${it.sl}. ${it.title}`);
+        if (notMine.length) deny(`You are not the assigner for: ${notMine.slice(0, 4).join('; ')}.`);
+        pairs.forEach(([, r]) => { r.assignerId = actor.id; });
+      }
+      const missing = pairs.filter(([, r]) => !r.ownerId || !T.user(r.ownerId) || !T.user(r.ownerId).active).map(([it]) => `${it.sl}. ${it.title}`);
+      need(!missing.length, `Choose an owner for: ${missing.slice(0, 4).join('; ')}${missing.length > 4 ? ` and ${missing.length - 4} more` : ''}.`);
+      const noDate = pairs.filter(([, r]) => !Number.isFinite(r.dueAt)).map(([it]) => `${it.sl}. ${it.title}`);
+      need(!noDate.length, `Set a due date for: ${noDate.slice(0, 4).join('; ')}.`);
+      const past = pairs.filter(([, r]) => r.dueAt <= now()).map(([it]) => `${it.sl}. ${it.title}`);
+      need(!past.length, `Due date is already past for: ${past.slice(0, 4).join('; ')}. Choose later dates.`);
+      const label = T.periodLabel(period), ids = [];
+      pairs.forEach(([it, r]) => {
+        const owner = T.user(r.ownerId);
+        const assigner = r.assignerId && T.user(r.assignerId) && T.user(r.assignerId).active ? r.assignerId : (it.assignerId || actor.id);
+        const t = T._core.createTask(actor, {
+          title: `${it.title} — ${label} close`, assignedBy: assigner, reviewerId: assigner,
+          description: `Month-end close for ${label} · Activity ${it.sl}${it.module ? ` · ${it.module}` : ''}${it.area ? ` / ${it.area}` : ''}${it.scheduleRequired ? ' · Schedule required: attach the schedule before submitting.' : ''}`,
+          deptId: it.deptId || T.userDepts(owner)[0] || (D().departments[0] || {}).id, category: 'Month-end close', priority: 'high',
+          ownerId: owner.id, collaborators: r.coOwners || [], dueAt: r.dueAt, expectedTatHrs: 48,
+          approvals: r.approverId && r.approverId !== owner.id ? [{ label: 'Approval', approverId: r.approverId }] : [],
+          checklist: it.scheduleRequired ? ['Prepare the schedule', 'Reconcile the schedule with the GL', 'Attach the schedule to this task'] : [],
+          module: [it.module, it.area].filter(Boolean).join(' · '), scheduleRequired: it.scheduleRequired,
+          closeRef: { period, itemId: it.id, sl: it.sl }
+        });
+        ids.push(t.id);
+        if (saveDefaults) { it.ownerId = owner.id; it.coOwners = (r.coOwners || []).filter(id => id !== owner.id && T.user(id)); it.approverId = !r.approverId ? 'none' : r.approverId === T.mgrOf(owner.id) ? null : r.approverId; if (admin) it.assignerId = assigner; }
+      });
+      audit(actor.id, 'close_planned', null, `Month-end close ${label}: ${ids.length} task(s) assigned${saveDefaults ? '; owners saved as defaults' : ''}`);
+      commit();
+      return { created: ids.length, ids };
+    },
+
+    /* Super Admin / Department Head: move the due dates of several tasks at once (e.g. a month-end close).
+       spec = { mode: 'set', dueAt } or { mode: 'shift', days } (working days, + later / - earlier). */
+    bulkChangeDeadline(actor, ids, spec, reason, attribution) {
+      if (!T.canSeeAll(actor)) deny('Only the Super Admin or Department Head can change timelines in bulk.');
+      need(Array.isArray(ids) && ids.length >= 1 && ids.length <= 100, 'Select between 1 and 100 tasks.');
+      need(reason && String(reason).trim().length >= 5, 'A reason is required for a timeline change.');
+      need(['employee', 'manager', 'external'].includes(attribution), 'Select who the change is attributable to.');
+      need(spec && (spec.mode === 'set' || spec.mode === 'shift'), 'Choose a new date or a number of working days.');
+      const plan = [...new Set(ids)].map(id => {
+        const t = T.task(id); need(t, `Task ${id} not found.`);
+        need(T.isOpen(t) && t.status !== 'pending_review', `${t.id} is already submitted or closed — its timeline cannot change.`);
+        let due;
+        if (spec.mode === 'set') { need(Number.isFinite(spec.dueAt), 'Choose the new due date.'); due = spec.dueAt; }
+        else { const n = parseInt(spec.days, 10); need(n && Math.abs(n) <= 30, 'Move by 1 to 30 working days.'); due = T.addWorkingDays(t.dueAt, n); }
+        need(due > now(), `${t.id}: the new due date ${T.fmt(due)} is already past.`);
+        return [t, due];
+      });
+      plan.forEach(([t, due]) => { if (due !== t.dueAt) T._core.changeDeadline(actor, t.id, due, reason, attribution); });
+      const changed = plan.filter(([t, due]) => t.dueAt === due).length;
+      audit(actor.id, 'timeline_changed', null, `Timeline changed for ${changed} task(s) (${spec.mode === 'set' ? `to ${T.fmt(spec.dueAt)}` : `${spec.days > 0 ? '+' : ''}${spec.days} working day(s)`}, ${attribution}-attributed): ${String(reason).trim()}`);
+      commit();
+      return { changed };
+    },
+
+    /* Set or change the approval steps a task needs before it can be submitted. */
+    setApprovals(actor, id, steps) {
+      const t = T.task(id); if (!T.canManage(actor, t)) deny('Only managers can change approval steps.');
+      need(T.isOpen(t) && t.status !== 'pending_review', 'Approval steps can only be changed on active tasks.');
+      need(t.status !== 'in_approval', 'Wait for the current approval to finish, or ask the assignee to withdraw it, before changing the steps.');
+      const before = (t.approvals || []).map(a => `${a.label} (${T.userName(a.approverId)})`).join(' → ') || 'none';
+      t.approvals = T.cleanApprovals(steps, t.ownerId);
+      const after = t.approvals.map(a => `${a.label} (${T.userName(a.approverId)})`).join(' → ') || 'none';
+      audit(actor.id, 'approval_steps', t, `Approval steps changed: ${before} ⇒ ${after}`); commit();
+    },
+
+    requestApproval(actor, id, note) {
+      const t = T.task(id); if (!T.isOwner(actor, t)) deny('Only the assignee can send a task for approval.');
+      need(T.hasApprovals(t), 'This task has no approval steps.');
+      need(['assigned', 'acknowledged', 'in_progress', 'reopened', 'on_hold'].includes(t.status), 'This task cannot be sent for approval in its current state.');
+      need(!T.approvalsDone(t), 'All approvals are already received — you can submit the task.');
+      const at = now();
+      t.approvalRound = (t.approvalRound || 0) + 1;
+      t.approvals.forEach(a => { if (a.status !== 'approved') { a.status = 'waiting'; a.requestedAt = null; a.decidedAt = null; a.note = ''; a.by = null; } });
+      const step = t.approvals.find(a => a.status !== 'approved');
+      step.status = 'pending'; step.requestedAt = at;
+      t.approvalLog = t.approvalLog || [];
+      t.approvalLog.push({ round: t.approvalRound, stepId: step.id, label: step.label, approverId: step.approverId, requestedAt: at, requestedBy: actor.id, note: (note || '').trim(), decision: null, decidedAt: null });
+      if (!t.ackAt) t.ackAt = at;
+      if (!t.startedAt) t.startedAt = at;
+      t.status = 'in_approval';
+      audit(actor.id, 'approval_requested', t, `Sent for approval: ${step.label} — ${T.userName(step.approverId)}${note && note.trim() ? `. Note: ${note.trim()}` : ''}`);
+      notify('approval', t, [step.approverId], `${actor.name} needs your approval on “${t.title}” (${step.label})`, `${t.id}:appr:${t.approvalRound}:${step.id}`);
+      commit();
+    },
+
+    decideApproval(actor, id, decision, note) {
+      const t = T.task(id); need(t, 'Task not found.');
+      const step = T.currentApproval(t);
+      need(step, 'This task is not waiting for an approval.');
+      const onBehalf = actor.id !== step.approverId;
+      if (onBehalf && actor.role !== 'super_admin') deny(`Only ${T.userName(step.approverId)} can decide this approval.`);
+      need(['approve', 'reject'].includes(decision), 'Choose approve or reject.');
+      if (decision === 'reject') need(note && note.trim().length >= 5, 'Give a reason when rejecting, so the assignee knows what to fix.');
+      const at = now();
+      step.status = decision === 'approve' ? 'approved' : 'rejected';
+      step.decidedAt = at; step.by = actor.id; step.note = (note || '').trim();
+      const log = [...(t.approvalLog || [])].reverse().find(e => e.stepId === step.id && !e.decidedAt);
+      if (log) { log.decision = step.status; log.decidedAt = at; log.decidedBy = actor.id; log.decisionNote = step.note; }
+      const who = onBehalf ? `${actor.name} on behalf of ${T.userName(step.approverId)}` : actor.name;
+      if (decision === 'reject') {
+        t.approvals.forEach(a => { if (a.status === 'waiting' || a.status === 'pending') a.status = 'waiting'; });
+        t.status = 'in_progress';
+        audit(actor.id, 'approval_rejected', t, `${step.label} rejected by ${who}: ${step.note}`);
+        notify('approval_rejected', t, [t.ownerId], `${step.label} for “${t.title}” was rejected by ${actor.name}: ${step.note}`, `${t.id}:apprno:${t.approvalRound}:${step.id}`);
+      } else {
+        const next = t.approvals.find(a => a.status === 'waiting');
+        audit(actor.id, 'approval_given', t, `${step.label} approved by ${who}${step.note ? `: ${step.note}` : ''}`);
+        if (next) {
+          next.status = 'pending'; next.requestedAt = at;
+          t.approvalLog.push({ round: t.approvalRound, stepId: next.id, label: next.label, approverId: next.approverId, requestedAt: at, requestedBy: actor.id, note: '', decision: null, decidedAt: null });
+          notify('approval', t, [next.approverId], `“${t.title}” needs your approval (${next.label}) — ${step.label} done by ${actor.name}`, `${t.id}:appr:${t.approvalRound}:${next.id}`);
+        } else {
+          t.status = 'in_progress';
+          notify('approval_done', t, [t.ownerId], `All approvals received for “${t.title}”. You can now submit it.`, `${t.id}:approk:${t.approvalRound}`);
+        }
+      }
+      commit();
+    },
+
+    withdrawApproval(actor, id) {
+      const t = T.task(id); if (!T.isOwner(actor, t)) deny('Only the assignee can withdraw an approval request.');
+      const step = T.currentApproval(t); need(step, 'This task is not waiting for an approval.');
+      step.status = 'waiting'; step.requestedAt = null;
+      const log = [...(t.approvalLog || [])].reverse().find(e => e.stepId === step.id && !e.decidedAt);
+      if (log) { log.decision = 'withdrawn'; log.decidedAt = now(); log.decidedBy = actor.id; }
+      t.status = 'in_progress';
+      audit(actor.id, 'approval_withdrawn', t, `Approval request withdrawn (${step.label})`); commit();
     },
 
     reassign(actor, id, newOwnerId, reason, cause) {
@@ -301,7 +546,7 @@
     duplicate(actor, id) {
       const t = T.task(id); if (!T.canManage(actor, t)) deny();
       const span = Math.max(t.dueAt - t.createdAt, DAY);
-      return T.api.createTask(actor, {
+      return T._core.createTask(actor, {
         title: t.title + ' (copy)', description: t.description, deptId: t.deptId, category: t.category, priority: t.priority,
         ownerId: t.ownerId, dueAt: now() + span, expectedTatHrs: t.expectedTatHrs, reminder: t.reminder, kpi: t.kpi,
         kpiWeight: t.kpiWeight, checklist: t.checklist.map(c => c.text)
@@ -335,7 +580,7 @@
       need(file && file.name, 'No file selected.');
       need(file.size <= 25 * 1024 * 1024, 'Files must be 25 MB or smaller.');
       // Demo build stores metadata only; production uploads to private object storage with signed URLs.
-      t.attachments.push({ id: 'a' + now().toString(36), name: file.name, size: file.size, by: actor.id, at: now() });
+      t.attachments.push({ id: 'a' + now().toString(36) + Math.random().toString(36).slice(2, 6), name: String(file.name).slice(0, 200), size: +file.size || 0, by: actor.id, at: now(), ...(file.path ? { path: file.path, mime: file.mime || '' } : {}) });
       audit(actor.id, 'attachment', t, `Attached ${file.name}`); commit();
     },
     addDependency(actor, id, depId) {
@@ -349,6 +594,17 @@
     /* --- admin --- */
     updateSettings(actor, patch, label) {
       if (actor.role !== 'super_admin') deny('Only the Super Admin can change system settings.');
+      const ALLOWED = ['companyName', 'workingDays', 'businessHours', 'holidays', 'kpiWeights', 'kpiPolicy', 'rules', 'channels'];
+      const bad = Object.keys(patch || {}).filter(k => !ALLOWED.includes(k));
+      need(!bad.length, `Unknown setting(s): ${bad.join(', ')}`);
+      if (patch.kpiWeights) {
+        const keys = ['onTime', 'completion', 'quality', 'tat', 'responsiveness'];
+        need(keys.every(k => Number.isFinite(patch.kpiWeights[k]) && patch.kpiWeights[k] >= 0), 'Every KPI weight must be a non-negative number.');
+        need(keys.reduce((a, k) => a + patch.kpiWeights[k], 0) === 100, 'KPI weights must total exactly 100%.');
+        patch.kpiWeights = Object.fromEntries(keys.map(k => [k, patch.kpiWeights[k]]));
+      }
+      if (patch.workingDays) need(Array.isArray(patch.workingDays) && patch.workingDays.length && patch.workingDays.every(d => Number.isInteger(d) && d >= 0 && d <= 6), 'Invalid working days.');
+      if (patch.rules) need(patch.rules.escalation2Days > patch.rules.escalation1Days, 'Second escalation must be later than the first.');
       Object.assign(D().settings, patch);
       audit(actor.id, 'settings', null, label || 'Settings updated'); commit();
     },
@@ -356,18 +612,51 @@
       if (actor.role !== 'super_admin') deny('Only the Super Admin can manage users.');
       need(u.name && u.name.trim(), 'Name is required.');
       need(T.ROLES[u.role], 'Invalid role.');
+      if (T.isServer() || T.isShared()) need(u.email && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(u.email), 'A valid work email is required — it is used to sign in.');
+      const claudeId = typeof u.claudeId === 'string' && u.claudeId.length < 120 ? u.claudeId : null;
+      const existing = u.id ? T.user(u.id) : null;
+      if (existing && existing.id === actor.id) {
+        need(u.role === existing.role, 'You cannot change your own role. Ask another Super Admin to do it.');
+        need(u.active !== false, 'You cannot deactivate your own account.');
+      }
+      if (existing && existing.role === 'super_admin' && (u.role !== 'super_admin' || u.active === false))
+        need(D().users.some(x => x.id !== existing.id && x.active && x.role === 'super_admin'), 'Task360 needs at least one active Super Admin.');
+      const depts = (Array.isArray(u.depts) ? u.depts : (u.deptId ? [u.deptId] : [])).filter((id, i, a) => T.dept(id) && a.indexOf(id) === i);
+      const teams = (Array.isArray(u.teams) ? u.teams : []).filter((id, i, a) => T.dept(id) && a.indexOf(id) === i);
+      if (u.managerId) need(T.user(u.managerId) && u.managerId !== u.id, 'Select a valid reporting manager.');
       const d = D();
+      if (u.email) need(!d.users.some(x => x.id !== u.id && x.email && x.email.toLowerCase() === u.email.toLowerCase()), 'Another user already has this email.');
+      if (u.id) need(T.user(u.id), 'User not found.');
+      u = { id: u.id, name: u.name.trim(), email: (u.email || '').trim().toLowerCase(), role: u.role, deptId: depts[0] || null, depts, managerId: u.managerId || null, teams: u.role === 'manager' ? teams : [], ...(u.id ? { active: u.active !== false } : {}), ...(claudeId ? { claudeId } : {}) };
       if (u.id) { const ex = T.user(u.id); Object.assign(ex, u); audit(actor.id, 'user', null, `User updated: ${u.name}`); }
       else { u.id = 'u' + (Math.max(...d.users.map(x => +x.id.slice(1))) + 1); u.active = true; u.onLeave = false; d.users.push(u); audit(actor.id, 'user', null, `User created: ${u.name} (${T.ROLES[u.role]})`); }
       commit(); return u;
     },
-    saveDept(actor, name) {
+    saveDept(actor, name, managerId) {
       if (actor.role !== 'super_admin') deny('Only the Super Admin can manage departments.');
-      need(name && name.trim(), 'Department name is required.');
-      const d = D(); const id = 'd' + (Math.max(...d.departments.map(x => +x.id.slice(1))) + 1);
-      const palette = ['#7c3aed', '#0d9488', '#ea580c', '#2563eb', '#be123c'];
-      d.departments.push({ id, name: name.trim(), color: palette[d.departments.length % palette.length] });
-      audit(actor.id, 'department', null, `Department created: ${name.trim()}`); commit();
+      name = String(name || '').trim();
+      need(name.length >= 2, 'Department name is required.');
+      const d = D();
+      need(!d.departments.some(x => x.name.toLowerCase() === name.toLowerCase()), `A department called “${name}” already exists.`);
+      const mgr = managerId ? T.user(managerId) : null;
+      if (managerId) need(mgr && mgr.active && mgr.role === 'manager', 'Select a reporting manager to run this department.');
+      const id = 'd' + (Math.max(0, ...d.departments.map(x => +x.id.slice(1) || 0)) + 1);
+      const palette = ['#7c3aed', '#0d9488', '#ea580c', '#2563eb', '#be123c', '#65a30d'];
+      const dept = { id, name: name.slice(0, 80), color: palette[d.departments.length % palette.length] };
+      d.departments.push(dept);
+      if (mgr) { mgr.depts = [...new Set([...T.userDepts(mgr), id])]; mgr.deptId = mgr.deptId || id; if (mgr.teams && mgr.teams.length) mgr.teams = [...new Set([...mgr.teams, id])]; }
+      audit(actor.id, 'department', null, `Department created: ${dept.name}${mgr ? ` (managed by ${mgr.name})` : ''}`); commit();
+      return dept;
+    },
+    renameDept(actor, id, name) {
+      if (actor.role !== 'super_admin') deny('Only the Super Admin can manage departments.');
+      const dept = T.dept(id); need(dept, 'Department not found.');
+      name = String(name || '').trim();
+      need(name.length >= 2, 'Department name is required.');
+      need(!D().departments.some(x => x.id !== id && x.name.toLowerCase() === name.toLowerCase()), `A department called “${name}” already exists.`);
+      const old = dept.name; dept.name = name.slice(0, 80);
+      audit(actor.id, 'department', null, `Department renamed: ${old} → ${dept.name}`); commit();
+      return dept;
     },
     setLeave(actor, userId, onLeave, backupId) {
       const u = T.user(userId);
@@ -386,19 +675,38 @@
       }
       commit();
     },
-    saveRecurring(actor, r) {
+    saveRecurring(actor, input) {
       if (!T.canCreate(actor)) deny();
-      need(r.title && r.title.trim(), 'Title is required.');
-      need(T.user(r.ownerId), 'Select an assignee.');
+      need(input && input.title && String(input.title).trim(), 'Title is required.');
+      const owner = T.user(input.ownerId);
+      need(owner && owner.active, 'Select an assignee.');
+      need(T.assignableUsers(actor).some(u => u.id === owner.id), 'You can only set up recurring tasks for your authorised teams.');
+      need(['daily', 'weekly', 'monthly', 'quarterly', 'annual'].includes(input.frequency), 'Invalid frequency.');
+      need(/^\d{2}:\d{2}$/.test(input.dueTime || ''), 'Invalid due time.');
+      const pr = T.PRIORITIES.find(p => p.id === input.priority) || T.PRIORITIES[1];
+      // Only these fields can be set by a user; creator, schedule state and IDs are controlled here.
+      const r = {
+        title: String(input.title).trim().slice(0, 160), description: String(input.description || '').slice(0, 2000),
+        frequency: input.frequency, dayOfMonth: Math.min(Math.max(parseInt(input.dayOfMonth, 10) || 1, 1), 28),
+        weekday: Math.min(Math.max(parseInt(input.weekday, 10) || 0, 0), 6), month: Math.min(Math.max(parseInt(input.month, 10) || 3, 1), 12),
+        dueTime: input.dueTime, ownerId: owner.id, deptId: owner.deptId, priority: pr.id,
+        tatHrs: Math.max(parseInt(input.tatHrs, 10) || pr.tat, 1), category: T.CATEGORIES.includes(input.category) ? input.category : 'Ad hoc',
+        approvals: T.cleanApprovals(input.approvals, owner.id).map(a => ({ label: a.label, approverId: a.approverId }))
+      };
       const d = D();
-      if (r.id) Object.assign(d.recurring.find(x => x.id === r.id), r);
-      else { r.id = 'r' + (d.recurring.length + 1) + now().toString(36).slice(-3); r.createdBy = actor.id; r.active = true; r.lastKey = null; d.recurring.push(r); }
+      if (input.id) {
+        const ex = d.recurring.find(x => x.id === input.id); need(ex, 'Recurring template not found.');
+        need(T.canSeeAll(actor) || ex.createdBy === actor.id || T.managerTeams(actor).includes(ex.deptId), 'You cannot edit this recurring template.');
+        Object.assign(ex, r);
+      } else { r.id = 'r' + (d.recurring.length + 1) + now().toString(36).slice(-3); r.createdBy = actor.id; r.active = true; r.lastKey = null; d.recurring.push(r); }
       audit(actor.id, 'recurring', null, `Recurring template saved: ${r.title} (${r.frequency})`); commit();
       T.engine.run();
     },
     toggleRecurring(actor, id) {
       if (!T.canCreate(actor)) deny();
-      const r = D().recurring.find(x => x.id === id); r.active = !r.active;
+      const r = D().recurring.find(x => x.id === id); need(r, 'Recurring template not found.');
+      need(T.canSeeAll(actor) || r.createdBy === actor.id || T.managerTeams(actor).includes(r.deptId), 'You cannot change this recurring template.');
+      r.active = !r.active;
       audit(actor.id, 'recurring', null, `${r.title} ${r.active ? 'activated' : 'paused'}`); commit();
     },
     markRead(actor, ids) {
@@ -406,6 +714,10 @@
       commit();
     }
   };
+
+  /* The rules' own functions, for calls from one rule to another. Adapters (shared page, server
+     client) wrap T.api for the UI; internal calls must not go through those wrappers. */
+  T._core = Object.assign({}, T.api);
 
   /* ---------------- recurring generation ---------------- */
   function periodFor(r, at) {
@@ -454,7 +766,7 @@
     const ratio = (num, den) => den.length ? { value: 100 * wsum(num) / wsum(den), num: num.length, den: den.length } : { value: null, num: 0, den: 0 };
 
     const dueTimely = due.filter(extOk);
-    const onTime = ratio(dueTimely.filter(t => t.firstSubmittedAt && t.firstSubmittedAt <= t.kpiDueAt), dueTimely);
+    const onTime = ratio(dueTimely.filter(T.submittedOnTime), dueTimely);
     const completion = ratio(due.filter(T.isSubmitted), due);
     const completed = base.filter(t => t.status === 'completed');
     const quality = ratio(completed.filter(t => t.reopenCount === 0), completed);
@@ -467,7 +779,7 @@
     let num = 0, wTot = 0;
     Object.keys(metrics).forEach(k => { if (metrics[k].value != null && W[k] > 0) { num += metrics[k].value * W[k]; wTot += W[k]; } });
     const score = wTot ? num / wTot : null; // weights re-normalised when a parameter has no data
-    const late = due.filter(t => !t.firstSubmittedAt ? t.kpiDueAt < at : t.firstSubmittedAt > t.kpiDueAt);
+    const late = due.filter(t => !t.firstSubmittedAt ? t.kpiDueAt < at : !T.submittedOnTime(t));
     const delays = { employee: 0, manager: 0, external: 0 };
     late.forEach(t => { if (t.externalDependency) delays.external++; else delays.employee++; });
     base.forEach(t => t.deadlineChanges.forEach(c => { if (c.attribution === 'manager') delays.manager++; }));
@@ -476,6 +788,69 @@
       counts: { total: base.length, due: due.length, completed: completed.length, open: base.filter(T.isOpen).length, overdue: base.filter(t => T.isOverdue(t)).length, reopened: base.filter(t => t.reopenCount > 0).length, external: base.filter(t => t.externalDependency).length },
       delays, tasks: base
     };
+  };
+  /* ---------- month-end close helpers ---------- */
+  T.closeItems = () => (D().settings.closeItems || []).slice().sort((a, b) => (a.sl || 0) - (b.sl || 0));
+  /* Add or update one close activity (validation only; callers audit and save). */
+  T.upsertCloseItem = function (input) {
+
+      need(input && String(input.title || '').trim().length >= 3, 'Activity name is required.');
+      const s = D().settings; s.closeItems = s.closeItems || [];
+      const okUser = id => id && T.user(id) && T.user(id).active;
+      const ownerId = okUser(input.ownerId) ? input.ownerId : null;
+      const item = {
+        title: String(input.title).trim().slice(0, 160), module: String(input.module || '').trim().slice(0, 40), area: String(input.area || '').trim().slice(0, 40),
+        scheduleRequired: !!input.scheduleRequired, ownerId,
+        coOwners: (Array.isArray(input.coOwners) ? input.coOwners : []).filter((id, i, a) => okUser(id) && id !== ownerId && a.indexOf(id) === i),
+        deptId: T.dept(input.deptId) ? input.deptId : null,
+        dueWd: Math.min(Math.max(parseInt(input.dueWd, 10) || 5, 1), 23),
+        approverId: input.approverId === 'none' ? 'none' : (okUser(input.approverId) && input.approverId !== ownerId ? input.approverId : null),
+        assignerId: okUser(input.assignerId) ? input.assignerId : null,
+        active: input.active !== false
+      };
+      if (input.id) {
+        const ex = s.closeItems.find(x => x.id === input.id); need(ex, 'Activity not found.');
+        Object.assign(ex, item);
+        return { item: ex, created: false };
+      }
+      const n = s.closeItems.reduce((m, x) => Math.max(m, parseInt(String(x.id).slice(2), 10) || 0), 0) + 1;
+      const wanted = parseInt(input.sl, 10);
+      const sl = wanted > 0 && !s.closeItems.some(x => x.sl === wanted) ? wanted : s.closeItems.reduce((m, x) => Math.max(m, x.sl || 0), 0) + 1;
+      Object.assign(item, { id: 'ci' + n, sl });
+      s.closeItems.push(item);
+      return { item, created: true };
+  };
+  /* Add (or with n < 0, subtract) working days, keeping the time of day. */
+  T.addWorkingDays = (ms, n) => {
+    let d = ms, left = Math.abs(n); const step = n > 0 ? DAY : -DAY;
+    while (left > 0) { d += step; if (T.isWorkingDay(d)) left--; }
+    return d;
+  };
+  /* How a month-end close task went: on time / late (submitted after the due date in force) / overdue / open. */
+  T.closeOutcome = (t, at = now()) => {
+    if (t.status === 'cancelled') return { key: 'cancelled' };
+    const revised = (t.deadlineChanges || []).length > 0;
+    if (t.firstSubmittedAt) {
+      const late = t.firstSubmittedAt - t.dueAt;
+      return late <= 0 ? { key: 'on_time', revised } : { key: 'late', delayMs: late, revised };
+    }
+    return at > t.dueAt ? { key: 'overdue', delayMs: at - t.dueAt, revised } : { key: 'open', revised };
+  };
+  /* Approver for an activity: its own choice, 'none' for no approval, otherwise the owner's reporting manager. */
+  T.closeApprover = (item, ownerId) => {
+    if (item && item.approverId === 'none') return null;
+    if (item && item.approverId && T.user(item.approverId)) return item.approverId;
+    const m = ownerId && T.user(T.mgrOf(ownerId));
+    return m && m.active && m.id !== ownerId ? m.id : null;
+  };
+  T.closeTasks = period => D().tasks.filter(t => t.closeRef && t.closeRef.period === period && t.status !== 'cancelled');
+  T.periodLabel = period => { const [y, m] = String(period).split('-').map(Number); return new Date(Date.UTC(y, m - 1, 15)).toLocaleString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' }); };
+  /* The n-th working day (holidays and weekly offs skipped) of the month after `period` — when that month's close is due. */
+  T.closeDueDate = (period, n) => {
+    let [y, m] = String(period).split('-').map(Number); m += 1; if (m > 12) { m = 1; y += 1; }
+    let ms = T.istToEpoch(`${y}-${String(m).padStart(2, '0')}-01`, '12:00'), count = 0;
+    for (let i = 0; i < 70; i++, ms += DAY) { if (T.isWorkingDay(ms) && ++count >= n) break; }
+    return T.istDateStr(ms);
   };
   T.monthRange = (offset = 0) => {
     const p = T.epochToIstParts(now());
@@ -503,7 +878,7 @@
         if (!owner) return;
         r.lastKey = per.key;
         try {
-          const t = T.api.createTask(creator, { title: `${r.title} — ${per.key.replace(/^(W|monthly:|quarterly:|annual:)/, '')}`, description: r.description || `Recurring ${r.frequency} activity.`, deptId: r.deptId, category: r.category, priority: r.priority, ownerId: r.ownerId, dueAt: per.due, expectedTatHrs: r.tatHrs, recurringId: r.id, allowPastDue: true, reminder: 'standard' });
+          const t = T._core.createTask(creator, { title: `${r.title} — ${per.key.replace(/^(W|monthly:|quarterly:|annual:)/, '')}`, description: r.description || `Recurring ${r.frequency} activity.`, deptId: r.deptId, category: r.category, priority: r.priority, ownerId: r.ownerId, dueAt: per.due, expectedTatHrs: r.tatHrs, recurringId: r.id, allowPastDue: true, reminder: 'standard', approvals: r.approvals || [] });
           d.audit.push(Object.freeze({ at, by: 'system', action: 'recurring', taskId: t.id, detail: `Generated from recurring template ${r.id}` }));
         } catch (e) { console.warn('Recurring generation failed', r.id, e.message); }
       });
@@ -512,6 +887,9 @@
       d.tasks.forEach(t => {
         if (!T.isOpen(t) || t.status === 'pending_review' || t.archived) return;
         const left = t.dueAt - at;
+        const pend = T.currentApproval(t);
+        if (pend && pend.requestedAt && at - pend.requestedAt > R.ackReminderHrs * HOUR)
+          send('approval_reminder', t, [pend.approverId], `Reminder: “${t.title}” is waiting for your approval (${pend.label}) since ${T.fmt(pend.requestedAt)}`, `${t.id}:apprrem:${t.approvalRound}:${pend.id}`);
         if (t.status === 'assigned' && at - t.assignedAt > R.ackReminderHrs * HOUR)
           send('ack_reminder', t, [t.ownerId], `Please acknowledge “${t.title}” (assigned ${T.fmt(t.assignedAt)})`, `${t.id}:ack:${t.assignedAt}`);
         if (left > 0 && left <= R.urgentReminderHrs * HOUR)
@@ -529,7 +907,7 @@
       });
 
       // 3. digests and periodic reports
-      const managers = d.users.filter(u => u.active && (u.role === 'manager' || u.role === 'dept_head'));
+      const managers = d.users.filter(u => u.active && (u.role === 'manager' || u.role === 'dept_head' || u.role === 'super_admin'));
       if (workday && hm >= R.digestTime) managers.forEach(m => {
         const vis = T.visibleTasks(m).filter(t => !t.archived);
         const od = vis.filter(t => T.isOverdue(t)).length, today = vis.filter(T.dueToday).length, crit = vis.filter(t => T.isOpen(t) && t.priority === 'critical').length, rev = vis.filter(t => t.status === 'pending_review').length;

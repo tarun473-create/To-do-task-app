@@ -7,7 +7,10 @@ window.T360 = window.T360 || {};
 (function (T) {
   'use strict';
 
-  const STORAGE_KEY = 'task360.v1';
+  /* A trial copy can supply its own starting data (window.T360_SEED) and storage key. */
+  const CFG = (typeof window !== 'undefined' && window.T360_CONFIG) || {};
+  const STORAGE_KEY = CFG.storageKey || 'task360.v2';
+  const startData = () => (typeof window !== 'undefined' && window.T360_SEED) ? JSON.parse(JSON.stringify(window.T360_SEED)) : seed();
   const HOUR = 3600e3, DAY = 24 * HOUR;
 
   T.HOUR = HOUR; T.DAY = DAY;
@@ -17,6 +20,7 @@ window.T360 = window.T360 || {};
     { id: 'acknowledged', label: 'Acknowledged', desc: 'Employee has accepted the task' },
     { id: 'in_progress', label: 'In Progress', desc: 'Employee is working on the task' },
     { id: 'on_hold', label: 'On Hold', desc: 'Pending a specific dependency' },
+    { id: 'in_approval', label: 'In Approval', desc: 'Waiting for approval before submission' },
     { id: 'pending_review', label: 'Pending Review', desc: 'Submitted, awaiting manager approval' },
     { id: 'completed', label: 'Completed', desc: 'Reviewed and closed' },
     { id: 'reopened', label: 'Reopened', desc: 'Further correction or action required' },
@@ -58,6 +62,7 @@ window.T360 = window.T360 || {};
     ],
     kpiWeights: { onTime: 35, completion: 25, quality: 20, tat: 10, responsiveness: 10 },
     kpiPolicy: { excludeExternal: true, excludeCancelled: true },
+    closeItems: [],          // month-end close checklist (activities assigned month by month)
     rules: {
       ackReminderHrs: 4,
       dueReminderHrs: 24,
@@ -102,10 +107,9 @@ window.T360 = window.T360 || {};
       { id: 'd5', name: 'MIS & Closing', color: '#db2777' }
     ];
     const users = [
-      { id: 'u1', name: 'Aditi Sharma', role: 'super_admin', deptId: null, managerId: null, email: 'aditi.sharma@example.com' },
-      { id: 'u2', name: 'Rajesh Mehta', role: 'dept_head', deptId: null, managerId: null, email: 'rajesh.mehta@example.com' },
-      { id: 'u3', name: 'Priya Nair', role: 'manager', deptId: 'd1', teams: ['d1', 'd4'], managerId: 'u2', email: 'priya.nair@example.com' },
-      { id: 'u4', name: 'Vikram Singh', role: 'manager', deptId: 'd2', teams: ['d2', 'd3', 'd5'], managerId: 'u2', email: 'vikram.singh@example.com' },
+      { id: 'u1', name: 'Tarun Rajput', role: 'super_admin', deptId: null, managerId: null, email: 'tarun.rajput@example.com' },
+      { id: 'u3', name: 'Priya Nair', role: 'manager', deptId: 'd1', teams: ['d1', 'd4'], managerId: 'u1', email: 'priya.nair@example.com' },
+      { id: 'u4', name: 'Vikram Singh', role: 'manager', deptId: 'd2', teams: ['d2', 'd3', 'd5'], managerId: 'u1', email: 'vikram.singh@example.com' },
       { id: 'u5', name: 'Ananya Gupta', role: 'employee', deptId: 'd1', managerId: 'u3', email: 'ananya.gupta@example.com' },
       { id: 'u6', name: 'Rohit Verma', role: 'employee', deptId: 'd1', managerId: 'u3', email: 'rohit.verma@example.com' },
       { id: 'u7', name: 'Sneha Iyer', role: 'employee', deptId: 'd2', managerId: 'u4', email: 'sneha.iyer@example.com' },
@@ -262,13 +266,26 @@ window.T360 = window.T360 || {};
         const raw = localStorage.getItem(STORAGE_KEY);
         if (raw) { this.data = JSON.parse(raw); return; }
       } catch (e) { console.warn('Storage unavailable, using in-memory data', e); }
-      this.data = seed();
+      this.data = startData();
       this.save();
     },
     save() {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data)); } catch (e) { /* in-memory only */ }
     },
-    reset() { this.data = seed(); this.save(); },
+    reset() { this.data = startData(); this.save(); },
+    /* Clear all demo tasks and people; keep departments and settings; keep the Super Admin. */
+    resetEmpty() {
+      const d = this.data || seed();
+      const admin = Object.assign({}, d.users.find(u => u.role === 'super_admin') || { id: 'u1', name: 'Tarun Rajput', role: 'super_admin', email: '' },
+        { managerId: null, deptId: null, teams: [], active: true, onLeave: false, backupId: null });
+      const now = Date.now();
+      this.data = {
+        version: 1, demo: false, seededAt: now, seq: 1, settings: d.settings || T.defaultSettings(),
+        departments: d.departments, users: [admin], tasks: [], recurring: [], notifications: [],
+        audit: [{ at: now, by: admin.id, action: 'reset', taskId: null, detail: 'Demo data cleared; empty workspace started' }], sentKeys: {}, leaves: []
+      };
+      this.save();
+    },
     exportJSON() { return JSON.stringify(this.data, null, 2); },
     importJSON(text) {
       const d = JSON.parse(text);

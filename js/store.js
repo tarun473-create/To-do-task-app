@@ -7,7 +7,10 @@ window.T360 = window.T360 || {};
 (function (T) {
   'use strict';
 
-  const STORAGE_KEY = 'task360.v2';
+  /* A trial copy can supply its own starting data (window.T360_SEED) and storage key. */
+  const CFG = (typeof window !== 'undefined' && window.T360_CONFIG) || {};
+  const STORAGE_KEY = CFG.storageKey || 'task360.v2';
+  const startData = () => (typeof window !== 'undefined' && window.T360_SEED) ? JSON.parse(JSON.stringify(window.T360_SEED)) : seed();
   const HOUR = 3600e3, DAY = 24 * HOUR;
 
   T.HOUR = HOUR; T.DAY = DAY;
@@ -263,13 +266,13 @@ window.T360 = window.T360 || {};
         const raw = localStorage.getItem(STORAGE_KEY);
         if (raw) { this.data = JSON.parse(raw); return; }
       } catch (e) { console.warn('Storage unavailable, using in-memory data', e); }
-      this.data = seed();
+      this.data = startData();
       this.save();
     },
     save() {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data)); } catch (e) { /* in-memory only */ }
     },
-    reset() { this.data = seed(); this.save(); },
+    reset() { this.data = startData(); this.save(); },
     /* Clear all demo tasks and people; keep departments and settings; keep the Super Admin. */
     resetEmpty() {
       const d = this.data || seed();

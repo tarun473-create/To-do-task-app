@@ -109,6 +109,7 @@
       const badge = $('.demo-badge');
       if (!D().demo) badge.remove();
       else if (T.isServer()) badge.title = 'The shared database contains demonstration data';
+      if (badge && T.config.badge) { badge.textContent = T.config.badge; badge.title = T.config.badgeTitle || ''; }
       if (theme) document.documentElement.dataset.theme = theme;
       else if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark';
       const demoSwitch = !T.isServer() && !T.isShared();

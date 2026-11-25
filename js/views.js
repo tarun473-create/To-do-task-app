@@ -541,7 +541,7 @@
       data: T.isShared() ? `<div class="card" style="max-width:680px"><h2>Data</h2><div class="alert info">Every change is saved straight away to this page’s shared database and kept permanently, so you can review it later. Each task keeps its full history (who did what and when), approvals and comments; the Audit Trail shows everything together.</div>
         <button class="btn" id="dt-exp">Download a copy (JSON)</button></div>` : T.isServer() ? `<div class="card" style="max-width:640px"><h2>Data</h2><div class="alert info">Data is stored in the shared PostgreSQL database${D().demo ? ' and currently contains <b>demonstration data</b> (see server/README.md to start with an empty database)' : ''}. Database backups are handled by Supabase.</div>
         <button class="btn" id="dt-exp">Download snapshot of what you can see (JSON)</button></div>` : `<div class="card" style="max-width:640px"><h2>Data</h2><div class="alert warn">This standalone build stores <b>demonstration data</b> in this browser only. Deploy the server edition (see server/README.md) for multi-user access and permanent storage.</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="dt-exp">Download backup (JSON)</button><label class="btn">Restore backup<input type="file" id="dt-imp" accept=".json" hidden></label><button class="btn danger" id="dt-reset">Reset demo data</button><button class="btn danger" id="dt-empty">Start empty workspace</button></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="dt-exp">Download backup (JSON)</button><label class="btn">Restore backup<input type="file" id="dt-imp" accept=".json" hidden></label><button class="btn danger" id="dt-reset">${window.T360_SEED ? 'Start the trial again' : 'Reset demo data'}</button><button class="btn danger" id="dt-empty">Start empty workspace</button></div>
         <p class="small muted">“Start empty workspace” clears all demo tasks and people and keeps your departments, with ${esc((D().users.find(u => u.role === 'super_admin') || {}).name || 'you')} as Super Admin.</p></div>`
     };
     $('#view').innerHTML = `<div class="page-head"><div><h1>Admin settings</h1><div class="sub">System configuration — every change is audited</div></div></div>
@@ -584,7 +584,7 @@
       if (T.isServer() || T.isShared()) return;
       $('#dt-imp').onchange = e => { const fl = e.target.files[0]; if (!fl) return; fl.text().then(txt => U.act(() => T.store.importJSON(txt), 'Backup restored')); };
       const twoStep = (btn, label, fn) => btn.onclick = () => { if (btn.dataset.armed !== '1') { btn.dataset.armed = '1'; btn.textContent = label; return; } fn(); };
-      twoStep($('#dt-reset'), 'Click again to reload demo data', () => { T.store.reset(); T.engine.run(); U.toast('Demo data reloaded'); T.app.refresh(); });
+      twoStep($('#dt-reset'), window.T360_SEED ? 'Click again to start the trial again' : 'Click again to reload demo data', () => { T.store.reset(); T.engine.run(); U.toast(window.T360_SEED ? 'Trial started again' : 'Demo data reloaded'); T.app.refresh(); });
       twoStep($('#dt-empty'), 'Click again to clear all demo data', () => { T.store.resetEmpty(); U.toast('Demo data cleared — empty workspace ready'); T.app.go('team'); T.app.refresh(); });
     }
   };

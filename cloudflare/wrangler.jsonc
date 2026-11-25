@@ -1,0 +1,16 @@
+// Task360 on Cloudflare. Fill in database_id after creating the D1 database (see README.md).
+// Settings and secrets (APP_URL, MICROSOFT_*, INITIAL_PASSWORD, SESSION_SECRET, ...) are set in the
+// Cloudflare dashboard; "keep_vars" stops a deploy from wiping them.
+{
+  "name": "task360",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-09-01",
+  "keep_vars": true,
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "task360", "database_id": "PASTE-YOUR-D1-DATABASE-ID-HERE", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "task360-files" }],
+  "triggers": { "crons": ["*/10 * * * *"] },
+  "observability": { "enabled": true }
+}

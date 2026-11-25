@@ -344,11 +344,16 @@
     if (admin && T.isShared()) renderRequests(me);
     if (admin && T.isServer()) $$('[data-setpw]', v).forEach(b => b.onclick = () => {
       const u = T.user(b.dataset.setpw);
-      U.modal(`${u.linked ? 'Reset' : 'Set'} password — ${u.name}`, `<p>This creates a new temporary password for <b>${esc(u.name)}</b>. Any password they had stops working. They must choose their own password the first time they sign in.</p>`,
-        `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pw-go">Create temporary password</button>`, m => {
+      U.modal(`${u.linked ? 'Reset' : 'Set'} password — ${u.name}`, T.config.initialPassword ? `<p><b>${esc(u.name)}</b> goes back to the company starting password. Any password they set stops working, and they must choose a new one when they next sign in.</p>` : `<p>This creates a new temporary password for <b>${esc(u.name)}</b>. Any password they had stops working. They must choose their own password the first time they sign in.</p>`,
+        `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pw-go">${T.config.initialPassword ? 'Reset to starting password' : 'Create temporary password'}</button>`, m => {
           $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
           $('#pw-go').onclick = () => { $('#pw-go').disabled = true; T.remote.setPassword(u.id).then(r => {
             const url = location.origin + '/login';
+            if (r.initial) {
+              $('.modal-body', m).innerHTML = `<div class="alert info">Password reset. ${esc(u.name)} signs in at <b>${esc(url)}</b> with <b>${esc(r.email)}</b> and the company starting password, then must choose a new password straight away. Their other sessions were signed out.</div>`;
+              $('.modal-foot', m).innerHTML = '<button class="btn primary" data-close>Done</button>'; $$('[data-close]', m).forEach(x => x.onclick = U.closeLayer);
+              return;
+            }
             $('.modal-body', m).innerHTML = `<div class="alert info">Share these privately with ${esc(u.name)} (for example in person or by Teams chat). This password is shown only once.</div>
               <dl class="meta-grid"><dt>Sign-in page</dt><dd><b>${esc(url)}</b></dd><dt>Username</dt><dd><b>${esc(r.email)}</b></dd><dt>Temporary password</dt><dd><b style="font-family:ui-monospace,Menlo,monospace;font-size:16px" id="pw-val">${esc(r.password)}</b></dd></dl>
               <button class="btn sm" id="pw-copy">Copy all</button>`;

@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+.dev.vars
+# generated from ../index.html, ../css, ../js and migrations/ by scripts/sync.mjs
+public/app/
+src/gen/

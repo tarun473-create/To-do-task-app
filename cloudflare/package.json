@@ -1,0 +1,17 @@
+{
+  "name": "task360-cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Task360 on Cloudflare: Workers + D1 + R2 + Cron Triggers, Microsoft and password sign-in",
+  "type": "module",
+  "scripts": {
+    "sync": "node scripts/sync.mjs",
+    "dev": "npm run sync && wrangler dev",
+    "deploy": "npm run sync && wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply task360 --remote",
+    "db:migrate:local": "wrangler d1 migrations apply task360 --local"
+  },
+  "devDependencies": {
+    "wrangler": "4.167.0"
+  }
+}

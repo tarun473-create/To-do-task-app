@@ -84,14 +84,40 @@
         : `Approver: ${T.userName(a.approverId)}`;
       steps.push({ cls, title: `Approval: ${a.label}`, meta });
     });
+    T.delegations(t).forEach(c => {
+      const cls = c.status === 'completed' ? 'done' : c.status === 'pending_review' ? 'now' : 'now';
+      const meta = c.status === 'completed' ? `${T.userName(c.ownerId)} did it · checked by ${T.userName(c.reviewerId)} ${T.fmt(c.completedAt)}`
+        : c.status === 'pending_review' ? `${T.userName(c.ownerId)} marked it done ${T.fmt(c.submittedAt)} · waiting on ${T.userName(c.reviewerId)} to check it`
+        : `With ${T.userName(c.ownerId)} since ${T.fmt(c.assignedAt)} · ${T.statusLabel(c.status)} · due ${T.fmt(c.dueAt)}`;
+      steps.push({ cls, title: `Delegated to ${T.userName(c.ownerId)} (${c.id})`, meta });
+    });
     if (appr.length && T.approvalsDone(t) && !reached.submitted && T.isOpen(t)) steps.push({ cls: 'now', title: 'Ready to submit', meta: `All approvals received · waiting on ${T.userName(t.ownerId)}` });
-    steps.push({ cls: reached.submitted ? 'done' : 'todo', title: 'Submitted for final review', meta: t.submittedAt ? T.fmt(t.submittedAt) : t.firstSubmittedAt ? `First submitted ${T.fmt(t.firstSubmittedAt)}` : '—' });
-    steps.push({ cls: closed ? 'done' : st === 'pending_review' ? 'now' : cancelled ? 'bad' : 'todo', title: cancelled ? 'Cancelled' : 'Reviewed & closed',
+    const self = T.selfReviewed(t), rv = T.userName(t.reviewerId || t.createdBy);
+    if (!self) steps.push({ cls: reached.submitted ? 'done' : 'todo', title: t.parentId ? `Marked done, sent back to ${rv}` : 'Submitted for final review', meta: t.submittedAt ? T.fmt(t.submittedAt) : t.firstSubmittedAt ? `First submitted ${T.fmt(t.firstSubmittedAt)}` : '—' });
+    steps.push({ cls: closed ? 'done' : st === 'pending_review' ? 'now' : cancelled ? 'bad' : 'todo', title: cancelled ? 'Cancelled' : self ? 'Completed (self-assigned)' : t.parentId ? `Checked and marked done by ${rv}` : 'Reviewed & closed',
       meta: closed ? `${T.userName(t.reviewerId || t.createdBy)} · ${T.fmt(t.completedAt)}` : st === 'pending_review' ? `Waiting on ${T.userName(t.reviewerId || t.createdBy)} since ${T.fmt(t.submittedAt)}` : `Reviewer: ${T.userName(t.reviewerId || t.createdBy)}` });
     const s = T.stageOf(t);
     const icon = c => c === 'done' ? '✓' : c === 'bad' ? '✕' : c === 'now' ? '●' : '';
     return `${T.isOpen(t) ? `<div class="now-box"><b>Now:</b> ${esc(s.stage)}${s.waitingOn ? ` — waiting on <b>${esc(T.userName(s.waitingOn))}</b>` : ''}${s.since ? ` for ${U.since(s.since)}` : ''}</div>` : ''}
       <ol class="flow">${steps.map(x => `<li class="${x.cls}"><span class="dotx">${icon(x.cls)}</span><div><div class="st-title">${esc(x.title)}</div><div class="st-meta">${esc(x.meta)}</div></div></li>`).join('')}</ol>`;
+  };
+  U.chain = (t, me) => {
+    if (!T.inChain(t)) return '';
+    const all = T.chainTasks(t), root = all[0];
+    const kids = x => all.filter(c => c.parentId === x.id);
+    const row = (x, depth) => {
+      const seen = T.canView(me, x), cur = x.id === t.id;
+      const stage = T.isOpen(x) ? T.stageOf(x) : null;
+      const line = `<div class="chain-row${cur ? ' cur' : ''}" style="margin-left:${Math.min(depth, 8) * 18}px">
+        <span class="chain-arrow">${depth ? '↳' : '●'}</span>
+        <div><div><b>${esc(T.userName(x.ownerId))}</b> <span class="muted small">given by ${esc(T.userName(x.createdBy))}</span> ${U.status(x)} ${cur ? '<span class="pill p-low">this task</span>' : ''}</div>
+        <div class="small muted">${seen && !cur ? `<a href="#" data-open="${x.id}">${x.id}</a>` : x.id} · due ${T.fmt(x.dueAt)}${x.completedAt ? ` · done ${T.fmt(x.completedAt)}` : stage ? ` · ${esc(stage.stage)}` : ''}</div></div></div>`;
+      return line + kids(x).map(c => row(c, depth + 1)).join('');
+    };
+    const open = all.filter(x => T.isOpen(x) && !T.openDelegations(x).length);
+    return `<div class="section-title">Delegation chain</div>
+      <div class="small muted" style="margin-bottom:6px">Work flows down the chain. When the last person marks it done, it goes back up: each person checks it and marks their own task done, until ${esc(T.userName(root.reviewerId || root.createdBy))} closes ${root.id}.${open.length ? ` Now with: <b>${open.map(x => esc(T.userName(x.status === 'pending_review' ? (x.reviewerId || x.createdBy) : x.ownerId))).join(', ')}</b>.` : ''}</div>
+      <div class="chain">${row(root, 0)}</div>`;
   };
   U.approvalLog = t => {
     const log = t.approvalLog || [];
@@ -256,11 +282,22 @@
     const workable = ['acknowledged', 'in_progress', 'reopened', 'assigned', 'on_hold'].includes(t.status);
     const curStep = T.currentApproval(t);
     if (owner && workable && needsApproval) actions.push(`<button class="btn primary" data-a="sendappr">➜ Send for approval</button>`);
-    if (owner && workable) actions.push(`<button class="btn ${needsApproval ? '' : 'primary'}" data-a="submit" ${blockers.length ? 'disabled title="Blocked by dependency"' : needsApproval ? 'disabled title="Approval is required before submission"' : ''}>Submit completion</button>`);
+    const openKids = T.openDelegations(t), selfRev = T.selfReviewed(t), rvName = T.userName(t.reviewerId || t.createdBy);
+    const doneLabel = selfRev ? '✓ Complete task' : t.parentId ? `✓ Mark done (send to ${esc(rvName)})` : 'Submit completion';
+    if (owner && workable) actions.push(`<button class="btn ${needsApproval ? '' : 'primary'}" data-a="submit" ${openKids.length ? `disabled title="Waiting for delegated work: ${esc(openKids.map(x => T.userName(x.ownerId)).join(', '))}"` : blockers.length ? 'disabled title="Blocked by dependency"' : needsApproval ? 'disabled title="Approval is required before submission"' : ''}>${doneLabel}</button>`);
+    if (owner && workable) actions.push(`<button class="btn" data-a="delegate">⤷ Delegate</button>`);
+    if (owner && selfRev && t.status === 'pending_review') actions.push(`<button class="btn ok" data-a="approve">✓ Complete task</button>`);
     if (owner && curStep) actions.push(`<button class="btn" data-a="withdraw">Withdraw approval request</button>`);
     if (curStep && (curStep.approverId === me.id || me.role === 'super_admin')) actions.push(`<button class="btn ok" data-a="approk">✓ Approve${curStep.approverId !== me.id ? ' (on behalf)' : ''}: ${esc(curStep.label)}</button><button class="btn danger" data-a="apprno">✕ Reject</button>`);
     if (manage && T.isOpen(t) && !['in_approval', 'pending_review'].includes(t.status)) actions.push(`<button class="btn" data-a="apprsteps">${T.hasApprovals(t) ? 'Edit approval steps' : '＋ Approval steps'}</button>`);
-    if (manage && t.status === 'pending_review' && !owner) actions.push(`<button class="btn ok" data-a="approve">✓ Approve</button><button class="btn danger" data-a="reopen">↺ Reopen</button>`);
+    const reviewer = (manage || T.isReviewer(me, t)) && !owner;
+    const parent = t.parentId && T.task(t.parentId);
+    const canSendUp = parent && parent.ownerId === me.id && T.isOpen(parent) && !['pending_review', 'in_approval'].includes(parent.status)
+      && T.openDelegations(parent).every(x => x.id === t.id) && T.blockedBy(parent).every(x => x.id === t.id) && !(T.hasApprovals(parent) && !T.approvalsDone(parent));
+    if (reviewer && t.status === 'pending_review') {
+      if (canSendUp) actions.push(`<button class="btn ok" data-a="approveup">✓ Mark done${T.selfReviewed(parent) ? ' &amp; complete my task' : ` &amp; send to ${esc(T.userName(parent.reviewerId || parent.createdBy))}`}</button>`);
+      actions.push(`<button class="btn ${canSendUp ? '' : 'ok'}" data-a="approve">✓ ${t.parentId ? (canSendUp ? 'Only mark this done' : 'Check &amp; mark done') : 'Approve'}</button><button class="btn danger" data-a="reopen">↺ ${t.parentId ? 'Send back' : 'Reopen'}</button>`);
+    }
     if (manage && t.status === 'completed') actions.push(`<button class="btn danger" data-a="reopen">↺ Reopen</button>`);
     if (manage && T.isOpen(t)) actions.push(`<button class="btn" data-a="reassign">⇄ Reassign</button><button class="btn" data-a="deadline">📅 Change deadline</button>`);
     if (manage && T.isOpen(t)) actions.push(`<button class="btn" data-a="ext">${t.externalDependency ? 'Remove external exclusion' : 'Approve external dependency'}</button>`);
@@ -272,12 +309,14 @@
     const body = {
       details: `
         ${T.isOverdue(t) ? `<div class="alert danger">Overdue by ${T.rel(t.dueAt).replace(' ago', '')} (${T.overdueDays(t)} working day(s)). Status retained: ${T.statusLabel(t.status)}.</div>` : ''}
-        ${blockers.length ? `<div class="alert warn">⛓ Blocked by ${blockers.map(b => `<a href="#" data-open="${b.id}">${b.id}</a> (${esc(T.userName(b.ownerId))} — bottleneck)`).join(', ')}</div>` : ''}
+        ${T.openDelegations(t).length ? `<div class="alert info">⤷ You${owner ? '' : ' (the assignee)'} delegated this work to ${T.openDelegations(t).map(b => `<a href="#" data-open="${b.id}">${esc(T.userName(b.ownerId))} (${b.id})</a>`).join(', ')}. It can be marked done once their work is done and checked.</div>` : ''}
+        ${blockers.filter(b => b.parentId !== t.id).length ? `<div class="alert warn">⛓ Blocked by ${blockers.filter(b => b.parentId !== t.id).map(b => `<a href="#" data-open="${b.id}">${b.id}</a> (${esc(T.userName(b.ownerId))} — bottleneck)`).join(', ')}</div>` : ''}
         ${t.externalDependency ? `<div class="alert info">External dependency approved by ${esc(T.userName(t.externalDependency.approvedBy))}: ${esc(t.externalDependency.reason)} — excluded from timeliness KPI.</div>` : ''}
         <p>${esc(t.description) || '<span class="muted">No description</span>'}</p>
         ${t.scheduleRequired ? `<div class="alert ${(t.attachments || []).length ? 'info' : 'warn'}">📎 Schedule required — ${(t.attachments || []).length ? 'attached. You can submit when the work is done.' : 'attach the schedule (Attachments below) before submitting.'}</div>` : ''}
         <div class="section-title">Workflow — where this task is now</div>
         ${U.workflow(t)}
+        ${U.chain(t, me)}
         ${T.hasApprovals(t) || (t.approvalLog || []).length ? `<div class="section-title">Approval history</div>${U.approvalLog(t)}` : ''}
         <div class="section-title">Details</div>
         <dl class="meta-grid">
@@ -342,8 +381,31 @@
       ack: () => run(() => T.api.acknowledge(me, id), 'Acknowledged'),
       start: () => run(() => T.api.setStatus(me, id, 'in_progress'), 'Moved to In Progress'),
       hold: () => U.reasonPrompt('Put task on hold', 'Dependency / reason', '', r => { U.act(() => T.api.setStatus(me, id, 'on_hold', r), 'Task on hold').then(ok => { if (ok) reopenDrawer(); }) }),
-      submit: () => U.reasonPrompt('Submit completion', 'Completion remarks', `<div class="alert info">The submission timestamp is recorded by the system — it cannot be entered manually. Attach evidence on the Details tab before submitting.</div>`, r => { U.act(() => T.api.submit(me, id, r), 'Submitted for review').then(ok => { if (ok) reopenDrawer(); }) }),
-      approve: () => run(() => T.api.approve(me, id), 'Approved and closed'),
+      submit: () => U.reasonPrompt(selfRev ? 'Complete task' : t.parentId ? 'Mark done' : 'Submit completion', 'Completion remarks', `<div class="alert info">${selfRev ? 'You assigned this task to yourself, so it closes as soon as you confirm.' : t.parentId ? `This goes back to <b>${esc(rvName)}</b>, who checks it and marks it done.` : `This goes to <b>${esc(rvName)}</b> for final review.`} The time is recorded by the system. Attach evidence on the Details tab first.</div>`, r => { U.act(() => T.api.submit(me, id, r), selfRev ? 'Task completed' : t.parentId ? `Marked done and sent to ${rvName}` : 'Submitted for review').then(ok => { if (ok) reopenDrawer(); }) }),
+      approve: () => run(() => T.api.approve(me, id), t.ownerId === me.id ? 'Task completed' : t.parentId ? 'Marked done' : 'Approved and closed'),
+      approveup: () => U.modal('Mark done and send up', `<div class="alert info">This marks <b>${esc(T.userName(t.ownerId))}</b>’s work as done and, in the same step, marks your task <b>${t.parentId}</b> done${T.selfReviewed(T.task(t.parentId)) ? ' and completes it' : ` and sends it to <b>${esc(T.userName(T.task(t.parentId).reviewerId || T.task(t.parentId).createdBy))}</b>`}.</div>
+          <label class="field"><span>Remarks (optional)</span><textarea class="input" id="au-note" placeholder="e.g. Checked the reconciliation, all matched"></textarea></label>`,
+        `<button class="btn" data-close>Cancel</button><button class="btn ok" id="au-ok">✓ Mark done</button>`, m => {
+          $$('[data-close]', m).forEach(b => b.onclick = U.closeLayer);
+          $('#au-ok').onclick = () => U.act(() => T.api.approve(me, id, $('#au-note').value, { alsoParent: true }), 'Marked done and sent up the chain').then(ok => { if (ok) reopenDrawer(); });
+        }),
+      delegate: () => {
+        const people = T.store.data.users.filter(u => u.active && u.id !== me.id).sort((a, b) => a.name.localeCompare(b.name));
+        U.modal('Delegate this task', `<div class="alert info">The person you choose gets a linked task. When they mark it done, it comes back to you to check and mark done, and then your task goes on to <b>${esc(rvName)}</b>. Everyone in the chain can see where it is.</div>
+          <label class="field"><span>Delegate to *</span><select class="input" id="dg-user"><option value="">— choose a person —</option>${people.map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(T.deptNames(u))}${u.onLeave ? ' (on leave)' : ''}</option>`).join('')}</select></label><div id="dg-hint"></div>
+          <div class="grid2"><label class="field"><span>Due date *</span><input class="input" type="date" id="dg-d" value="${T.istDateStr(t.dueAt)}"></label><label class="field"><span>Due time (IST) *</span><input class="input" type="time" id="dg-t" value="${T.istTimeStr(t.dueAt)}"></label></div>
+          <div class="small muted" style="margin:-4px 0 8px">Your own deadline is ${T.fmt(t.dueAt)}. Give them an earlier date if you need time to check their work.</div>
+          <label class="field"><span>Instructions (optional)</span><textarea class="input" id="dg-note" placeholder="What exactly they should do"></textarea></label>`,
+          `<button class="btn" data-close>Cancel</button><button class="btn primary" id="dg-ok">⤷ Delegate</button>`, m => {
+            $$('[data-close]', m).forEach(b => b.onclick = U.closeLayer);
+            const upd = () => { const v = $('#dg-user').value; $('#dg-hint').innerHTML = v ? U.workloadHint(v) : ''; }; $('#dg-user').onchange = upd;
+            $('#dg-ok').onclick = () => {
+              const to = $('#dg-user').value; if (!to) return U.toast('Choose who to delegate to.', true);
+              const due = T.istToEpoch($('#dg-d').value, $('#dg-t').value);
+              U.act(() => T.api.delegate(me, id, { ownerId: to, dueAt: due, note: $('#dg-note').value }), `Delegated to ${T.userName(to)}`).then(ok => { if (ok) reopenDrawer(); });
+            };
+          });
+      },
       sendappr: () => {
         const first = t.approvals.find(a => a.status !== 'approved');
         U.modal('Send for approval', `<div class="alert info">Goes to <b>${esc(T.userName(first.approverId))}</b> for “${esc(first.label)}”.${t.approvals.length > 1 ? ` Then: ${esc(t.approvals.filter(a => a !== first && a.status !== 'approved').map(a => `${a.label} (${T.userName(a.approverId)})`).join(' → ') || 'none')}.` : ''}</div>

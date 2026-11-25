@@ -381,3 +381,9 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .co-list { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; width: 240px; max-height: 240px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(0,0,0,.15); padding: 6px; }
 .co-list label { display: flex; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 6px; font-size: 13px; cursor: pointer; }
 .co-list label:hover { background: var(--surface-2); }
+
+/* delegation chain */
+.chain { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.chain-row { display: grid; grid-template-columns: 18px 1fr; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.chain-row.cur { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.chain-arrow { color: var(--muted); font-weight: 700; }

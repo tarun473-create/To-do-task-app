@@ -192,7 +192,11 @@
 
   /* ---------------- wire the engine API to the shared store ---------------- */
   const APP_ACTIONS = new Set(['createTask', 'duplicate', 'saveUser', 'saveDept', 'renameDept', 'updateSettings', 'setLeave', 'saveRecurring', 'toggleRecurring', 'saveCloseItem', 'planClose', 'importCloseItems']);
-  const lockFor = (name, args) => name === 'bulkChangeDeadline' && Array.isArray(args[0])
+  /* Delegation touches linked tasks: lock the task, the task it came from, and the app doc (new task number). */
+  const chainLocks = id => { const t = T.task(id); return t && t.parentId ? ['tasks/' + id, 'tasks/' + t.parentId] : ['tasks/' + id]; };
+  const lockFor = (name, args) => (name === 'delegate' || name === 'cancel') && typeof args[0] === 'string' && /^T360-\d+$/.test(args[0]) ? ['app/main', ...chainLocks(args[0])]
+    : ['approve', 'submit', 'reopen'].includes(name) && typeof args[0] === 'string' && /^T360-\d+$/.test(args[0]) ? chainLocks(args[0])
+    : name === 'bulkChangeDeadline' && Array.isArray(args[0])
     ? ['app/main', ...[...new Set(args[0])].filter(id => /^T360-\d+$/.test(id)).map(id => 'tasks/' + id)]
     : APP_ACTIONS.has(name) || typeof args[0] !== 'string' || !/^T360-\d+$/.test(args[0]) ? ['app/main'] : ['tasks/' + args[0]];
   const original = Object.assign({}, T.api);

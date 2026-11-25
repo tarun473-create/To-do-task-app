@@ -64,10 +64,16 @@
   T.waitingOnMe = (t, me) => {
     const a = T.currentApproval(t);
     if (a) return a.approverId === me.id;
-    return t.status === 'pending_review' && t.ownerId !== me.id && T.canManage(me, t);
+    return t.status === 'pending_review' && t.ownerId !== me.id && (T.isReviewer(me, t) || T.canManage(me, t));
   };
   /* Where a task is in its workflow right now, and who it is waiting on. */
   T.stageOf = t => {
+    const kids = T.isOpen(t) && !['pending_review', 'in_approval'].includes(t.status) ? T.openDelegations(t) : [];
+    if (kids.length) {
+      const k = kids.find(x => x.status === 'pending_review');
+      if (k) return { stage: `Delegated work done by ${T.userName(k.ownerId)}, check and mark done`, waitingOn: t.ownerId, since: k.submittedAt };
+      return { stage: `Delegated to ${kids.map(x => T.userName(x.ownerId)).join(', ')}`, waitingOn: kids[0].ownerId, since: Math.min(...kids.map(x => x.assignedAt)) };
+    }
     const lastHold = [...(t.history || [])].reverse().find(h => h.action === 'on_hold');
     switch (t.status) {
       case 'assigned': return { stage: 'Awaiting acknowledgement', waitingOn: t.ownerId, since: t.assignedAt };
@@ -77,12 +83,34 @@
         return { stage: t.status === 'reopened' ? 'Rework after review' : t.status === 'acknowledged' ? 'Acknowledged, not started' : 'In progress', waitingOn: t.ownerId, since: t.startedAt || t.ackAt || t.assignedAt };
       case 'on_hold': return { stage: 'On hold', waitingOn: t.ownerId, since: lastHold ? lastHold.at : t.assignedAt };
       case 'in_approval': { const a = T.currentApproval(t); return { stage: `Approval: ${a ? a.label : ''}`, waitingOn: a ? a.approverId : null, since: a ? a.requestedAt : null }; }
-      case 'pending_review': return { stage: 'Final review', waitingOn: t.reviewerId || t.createdBy, since: t.submittedAt };
+      case 'pending_review': return { stage: t.parentId ? `Done, waiting for ${T.userName(t.reviewerId || t.createdBy)} to check and mark done` : 'Final review', waitingOn: t.reviewerId || t.createdBy, since: t.submittedAt };
       case 'completed': return { stage: 'Completed', waitingOn: null, since: t.completedAt };
       default: return { stage: 'Cancelled', waitingOn: null, since: null };
     }
   };
   T.blockedBy = t => (t.dependsOn || []).map(T.task).filter(x => x && T.isOpen(x));
+  /* ---------------- delegation chain ----------------
+     The assignee of a task can pass the work on to anyone. Each hand-off creates a linked task
+     (parentId → the task it came from, rootId → the first task in the chain). The person who
+     delegated reviews it and marks it done; their own task then goes back up to whoever gave it
+     to them, and so on until the first task is closed. */
+  T.rootOf = t => (t && t.rootId && T.task(t.rootId)) || t;
+  T.delegations = t => D().tasks.filter(x => x.parentId === t.id && x.status !== 'cancelled');
+  T.openDelegations = t => T.delegations(t).filter(x => x.status !== 'completed');
+  T.chainTasks = t => { const root = T.rootOf(t); return root ? [root, ...D().tasks.filter(x => x.rootId === root.id)] : []; };
+  T.inChain = t => !!(t && (t.rootId || chainRoots().has(t.id)));
+  /* Everyone in a chain can follow it end to end: the people it came from and the people it went to. */
+  let rootIdx = { arr: null, len: -1, set: null };
+  const chainRoots = () => {
+    const ts = D().tasks;
+    if (rootIdx.arr !== ts || rootIdx.len !== ts.length) rootIdx = { arr: ts, len: ts.length, set: new Set(ts.map(x => x.rootId).filter(Boolean)) };
+    return rootIdx.set;
+  };
+  T.chainMember = (u, t) => !!(t.rootId || chainRoots().has(t.id)) &&
+    T.chainTasks(t).some(x => x.ownerId === u.id || x.createdBy === u.id);
+  T.isReviewer = (u, t) => !!(u && t && (t.reviewerId || t.createdBy) === u.id);
+  /* Assigned by yourself to yourself, with no one else to review it: you can close it directly. */
+  T.selfReviewed = t => !!t && (t.reviewerId || t.createdBy) === t.ownerId;
 
   /* ---------------- permissions (enforced in every API call) ---------------- */
   /* A person can belong to several departments (u.depts); deptId is kept as their first one. */
@@ -97,8 +125,8 @@
     if (T.canSeeAll(u)) return true;
     if (t.ownerId === u.id || t.createdBy === u.id || t.reviewerId === u.id || (t.collaborators || []).includes(u.id)) return true;
     if ((t.approvals || []).some(a => a.approverId === u.id)) return true;
-    if (u.role === 'manager') return T.managerTeams(u).includes(t.deptId) || T.reportsTo(T.user(t.ownerId), u);
-    return false;
+    if (u.role === 'manager' && (T.managerTeams(u).includes(t.deptId) || T.reportsTo(T.user(t.ownerId), u))) return true;
+    return T.chainMember(u, t);
   };
   T.canManage = (u, t) => {
     if (!u || !t) return false;
@@ -125,8 +153,8 @@
     if (u.role === 'manager') { const mine = T.managerTeams(u); return D().users.filter(x => x.active && (x.id === u.id || x.managerId === u.id || (x.role === 'employee' && T.userDepts(x).some(d => mine.includes(d))))); }
     return [u];
   };
-  /* Super Admin / Department Head: anyone. Reporting Manager: employees in their departments and managers who report to them. */
-  T.assignableUsers = u => T.visibleUsers(u).filter(x => T.canSeeAll(u) || x.role === 'employee' || (x.role === 'manager' && x.managerId === u.id));
+  /* Super Admin / Department Head: anyone. Reporting Manager: themselves, employees in their departments and managers who report to them. */
+  T.assignableUsers = u => T.visibleUsers(u).filter(x => T.canSeeAll(u) || x.id === u.id || x.role === 'employee' || (x.role === 'manager' && x.managerId === u.id));
   T.visibleDepts = u => {
     if (T.canSeeAll(u)) return D().departments;
     if (u.role === 'manager') return D().departments.filter(d => T.managerTeams(u).includes(d.id));
@@ -152,7 +180,8 @@
     review: 'Review request', approved: 'Approved', reopened: 'Reopened', daily_followup: 'Daily follow-up', comment: 'Comment',
     weekly_summary: 'Weekly performance summary', monthly_kpi: 'Monthly KPI report', digest: 'Daily management digest',
     deadline_changed: 'Deadline changed', cancelled: 'Cancelled', recurring: 'Recurring task created', backup: 'Backup assignment',
-    approval: 'Approval request', approval_done: 'Approvals complete', approval_rejected: 'Approval rejected', approval_reminder: 'Approval reminder'
+    approval: 'Approval request', approval_done: 'Approvals complete', approval_rejected: 'Approval rejected', approval_reminder: 'Approval reminder',
+    delegated: 'Delegated to you', delegation_done: 'Delegated work done'
   };
   T.notifTypeLabel = t => TYPE_LABEL[t] || t;
 
@@ -193,6 +222,14 @@
 
   /* ---------------- task API ---------------- */
   const commit = () => T.store.save();
+  /* When delegated work is closed, tell the person it came from that their task can move on. */
+  function afterClose(actor, t) {
+    const parent = t.parentId && T.task(t.parentId);
+    if (!parent || !T.isOpen(parent)) return;
+    audit(actor.id, 'delegation_done', parent, `Delegated work ${t.id} (${T.userName(t.ownerId)}) is done${T.openDelegations(parent).length ? `; still waiting on ${T.openDelegations(parent).map(x => T.userName(x.ownerId)).join(', ')}` : ''}`);
+    if (!T.openDelegations(parent).length && parent.ownerId !== actor.id)
+      notify('delegation_done', parent, [parent.ownerId], `Delegated work on “${parent.title}” is done. Mark your task done to send it to ${T.userName(parent.reviewerId || parent.createdBy)}.`, `${parent.id}:deldone:${t.id}:${t.completedAt}`);
+  }
 
   T.api = {
     createTask(actor, input) {
@@ -290,29 +327,95 @@
         need(false, `This task needs approval before submission. Send it for approval first (next: ${next.label}, ${T.userName(next.approverId)}).`);
       }
       if (t.scheduleRequired) need((t.attachments || []).length > 0, 'This activity needs its schedule. Attach the schedule file before submitting.');
+      const waitingKids = T.openDelegations(t);
+      need(!waitingKids.length, `You delegated this work. Wait until ${waitingKids.map(x => `${T.userName(x.ownerId)} (${x.id})`).join(', ')} ${waitingKids.length > 1 ? 'have' : 'has'} marked it done and you have checked it.`);
       const blockers = T.blockedBy(t);
       need(!blockers.length, `Blocked by open dependency: ${blockers.map(b => b.id).join(', ')}`);
       const at = now(); // server-generated
       if (!t.ackAt) t.ackAt = at;
       if (!t.firstSubmittedAt) t.firstSubmittedAt = at;
-      t.submittedAt = at; t.status = 'pending_review'; t.progress = 100;
-      audit(actor.id, 'submitted', t, `Completion submitted: ${remarks.trim()}`);
-      notify('review', t, [t.reviewerId || t.createdBy], `${actor.name} submitted “${t.title}” for review`, `${t.id}:review:${at}`);
+      t.submittedAt = at; t.progress = 100;
+      if (T.selfReviewed(t)) {
+        t.status = 'completed'; t.completedAt = at;
+        audit(actor.id, 'completed', t, `Completed by ${actor.name} (self-assigned, no separate reviewer): ${remarks.trim()}`);
+        afterClose(actor, t);
+        commit(); return;
+      }
+      t.status = 'pending_review';
+      audit(actor.id, 'submitted', t, `${t.parentId ? 'Marked done and sent back to ' + T.userName(t.reviewerId || t.createdBy) : 'Completion submitted'}: ${remarks.trim()}`);
+      notify('review', t, [t.reviewerId || t.createdBy], t.parentId ? `${actor.name} marked “${t.title}” done. Check it and mark it done.` : `${actor.name} submitted “${t.title}” for review`, `${t.id}:review:${at}`);
       commit();
     },
 
-    approve(actor, id, note) {
-      const t = T.task(id); if (!T.canManage(actor, t)) deny('Only the reviewer or manager can approve.');
-      need(t.ownerId !== actor.id, 'You cannot approve your own task.');
+    approve(actor, id, note, opts) {
+      const t = T.task(id); need(t, 'Task not found.');
+      const selfClose = t.ownerId === actor.id && T.selfReviewed(t);
+      if (!(T.isReviewer(actor, t) || T.canManage(actor, t))) deny('Only the reviewer or manager can approve.');
+      need(t.ownerId !== actor.id || selfClose, 'You cannot approve your own task.');
       need(t.status === 'pending_review', 'Task is not pending review.');
       t.status = 'completed'; t.completedAt = now();
-      audit(actor.id, 'approved', t, 'Approved and closed' + (note ? `: ${note}` : ''));
-      notify('approved', t, [t.ownerId], `“${t.title}” was approved by ${actor.name}`, `${t.id}:approved:${t.completedAt}`);
+      audit(actor.id, 'approved', t, (t.parentId ? 'Checked and marked done' : 'Approved and closed') + (note ? `: ${note}` : ''));
+      if (!selfClose) notify('approved', t, [t.ownerId], `“${t.title}” was ${t.parentId ? 'accepted as done' : 'approved'} by ${actor.name}`, `${t.id}:approved:${t.completedAt}`);
+      afterClose(actor, t);
+      /* "Mark done and send up": the delegator accepts the work and, in the same step, marks their own task done. */
+      const parent = t.parentId && T.task(t.parentId);
+      if (opts && opts.alsoParent && parent && parent.ownerId === actor.id && T.isOpen(parent) && !T.blockedBy(parent).length) {
+        try { T._core.submit(actor, parent.id, (note && note.trim().length >= 5) ? note.trim() : `Work delegated to ${T.userName(t.ownerId)} (${t.id}) is done and checked.`); }
+        catch (e) { audit(actor.id, 'delegation_done', parent, `Could not mark done automatically: ${e.message}`); }
+      }
       commit();
+    },
+
+    /* Pass the work on to someone else. The new task is linked to this one, which waits until it is marked done. */
+    delegate(actor, id, input) {
+      const t = T.task(id); need(t, 'Task not found.');
+      if (!T.isOwner(actor, t)) deny('Only the person the task is assigned to can delegate it.');
+      need(['assigned', 'acknowledged', 'in_progress', 'reopened', 'on_hold'].includes(t.status), 'This task cannot be delegated in its current state.');
+      input = input || {};
+      const to = T.user(input.ownerId);
+      need(to && to.active, 'Choose who to delegate to.');
+      need(to.id !== actor.id, 'You cannot delegate a task to yourself.');
+      need(!T.openDelegations(t).some(x => x.ownerId === to.id), `${to.name} already has this work.`);
+      const depth = (() => { let n = 0, x = t; while (x && x.parentId && n < 50) { n++; x = T.task(x.parentId); } return n; })();
+      need(depth < 10, 'This chain is already 10 hand-offs long. Ask the last person to do the work.');
+      const at = now();
+      const dueAt = Number.isFinite(input.dueAt) ? input.dueAt : t.dueAt;
+      need(dueAt > at - 60e3, 'The due date for the delegated work must be in the future.');
+      const d = D(), root = T.rootOf(t);
+      let owner = to, backupNote = '';
+      if (to.onLeave && to.backupId && T.user(to.backupId) && T.user(to.backupId).active && to.backupId !== actor.id) { owner = T.user(to.backupId); backupNote = ` (backup for ${to.name}, on leave)`; }
+      const note = String(input.note || '').trim();
+      const c = {
+        id: 'T360-' + String(d.seq++).padStart(4, '0'),
+        title: t.title, description: [note, t.description].filter(Boolean).join('\n\n'),
+        deptId: t.deptId, category: t.category, priority: t.priority,
+        ownerId: owner.id, createdBy: actor.id, reviewerId: actor.id, collaborators: [],
+        createdAt: at, assignedAt: at, startDate: T.istDateStr(at),
+        dueAt, originalDueAt: dueAt, kpiDueAt: dueAt,
+        expectedTatHrs: t.expectedTatHrs, status: 'assigned', progress: 0, reminder: t.reminder,
+        kpi: t.kpi, kpiWeight: t.kpiWeight, externalDependency: null, dependsOn: [],
+        ackAt: null, startedAt: null, firstSubmittedAt: null, submittedAt: null, completedAt: null,
+        reopenCount: 0, recurringId: null, archived: false, comments: [], attachments: [],
+        checklist: (t.checklist || []).filter(x => !x.done).map((x, i) => ({ id: 'c' + (i + 1), text: x.text, done: false })),
+        ownership: [{ userId: owner.id, from: at, to: null, reason: `Delegated by ${actor.name}${backupNote}` }],
+        deadlineChanges: [], history: [], approvals: [], approvalLog: [], approvalRound: 0,
+        module: t.module || '', scheduleRequired: false, closeRef: null,
+        parentId: t.id, rootId: root.id
+      };
+      d.tasks.push(c);
+      t.dependsOn = t.dependsOn || [];
+      if (!t.dependsOn.includes(c.id)) t.dependsOn.push(c.id);
+      if (!t.ackAt) t.ackAt = at;
+      if (['assigned', 'acknowledged'].includes(t.status)) { t.status = 'in_progress'; t.startedAt = t.startedAt || at; }
+      audit(actor.id, 'delegated', c, `Delegated by ${actor.name} to ${owner.name}${backupNote} from ${t.id}; due ${T.fmt(dueAt)}${note ? `. Note: ${note}` : ''}`);
+      audit(actor.id, 'delegated', t, `Work delegated to ${owner.name}${backupNote} as ${c.id}; due ${T.fmt(dueAt)}. This task waits until ${owner.name} marks it done and ${actor.name} checks it.`);
+      notify('delegated', c, [owner.id], `${actor.name} delegated “${c.title}” to you — due ${T.fmt(dueAt)}`, `${c.id}:assigned`);
+      commit();
+      return c;
     },
 
     reopen(actor, id, reason) {
-      const t = T.task(id); if (!T.canManage(actor, t)) deny();
+      const t = T.task(id); if (!(T.canManage(actor, t) || (T.isReviewer(actor, t) && t.ownerId !== actor.id))) deny();
       need(['pending_review', 'completed'].includes(t.status), 'Only submitted or completed tasks can be reopened.');
       need(reason && reason.trim().length >= 5, 'A reason is required to reopen.');
       t.status = 'reopened'; t.reopenCount++; t.submittedAt = null; t.completedAt = null; t.progress = Math.min(t.progress, 80);
@@ -535,6 +638,13 @@
       t.status = 'cancelled';
       audit(actor.id, 'cancelled', t, `Cancelled: ${reason.trim()}`);
       notify('cancelled', t, [t.ownerId], `“${t.title}” was cancelled`, `${t.id}:cancelled`);
+      const cascade = x => T.delegations(x).filter(T.isOpen).forEach(c => {
+        c.status = 'cancelled';
+        audit(actor.id, 'cancelled', c, `Cancelled because ${t.id} was cancelled: ${reason.trim()}`);
+        notify('cancelled', c, [c.ownerId], `“${c.title}” was cancelled`, `${c.id}:cancelled`);
+        cascade(c);
+      });
+      cascade(t);
       commit();
     },
 

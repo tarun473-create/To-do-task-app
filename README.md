@@ -44,6 +44,15 @@ The task panel shows a workflow tracker: every stage, who it is waiting on, sinc
 
 Time spent waiting on approvers is not counted against the employee's turnaround time (TAT) or on-time KPI.
 
+## Who sees which tasks
+
+Only the **Super Admin** sees every task. Everyone else (Reporting Managers and members) sees, in dashboards, lists, KPI and reports:
+- tasks they **received** (assigned or delegated to them, or as co-owner, reviewer or approver);
+- tasks they **gave** (assigned or delegated by them);
+- tasks of their **reportees**, following the reporting line all the way down (a manager's manager sees the whole line below).
+
+Someone in a delegation chain can still open the other steps of that chain from the task, but those steps don't appear in their dashboard. The Team, KPI and Follow-up pages list only the person and their reportees. A Reporting Manager can still assign tasks to employees in their departments; those tasks then show as tasks they gave.
+
 ## Delegation chain and self-assigned tasks
 
 - **Delegate:** whoever a task is assigned to (any role) can pass the work on to anyone with **⤷ Delegate**, with their own due date and instructions. That person can delegate again (up to 10 hand-offs).

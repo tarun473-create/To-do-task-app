@@ -120,18 +120,31 @@
   T.managerTeams = u => u.role === 'manager' ? ((Array.isArray(u.teams) && u.teams.length) ? u.teams : T.userDepts(u)) : [];
   T.canSeeAll = u => u.role === 'super_admin' || u.role === 'dept_head';
   T.reportsTo = (emp, mgr) => emp && emp.managerId === mgr.id;
-  T.canView = (u, t) => {
+  /* Only the Super Admin sees every task. Everyone else sees: tasks they received, tasks they gave
+     (assigned or delegated), tasks they review or approve, and tasks of the people who report to
+     them, directly or further down (a manager's manager sees the whole line below). */
+  T.seesAll = u => !!u && u.role === 'super_admin';
+  T.reportees = u => {
+    const out = new Set(); if (!u) return out;
+    const kids = {}; D().users.forEach(x => { if (x.managerId) (kids[x.managerId] = kids[x.managerId] || []).push(x.id); });
+    const stack = [...(kids[u.id] || [])];
+    while (stack.length) { const id = stack.pop(); if (out.has(id) || id === u.id) continue; out.add(id); stack.push(...(kids[id] || [])); }
+    return out;
+  };
+  /* The tasks that count for a person's dashboards, lists and reports. */
+  T.inScope = (u, t, reps) => {
     if (!u || !t) return false;
-    if (T.canSeeAll(u)) return true;
+    if (T.seesAll(u)) return true;
     if (t.ownerId === u.id || t.createdBy === u.id || t.reviewerId === u.id || (t.collaborators || []).includes(u.id)) return true;
     if ((t.approvals || []).some(a => a.approverId === u.id)) return true;
-    if (u.role === 'manager' && (T.managerTeams(u).includes(t.deptId) || T.reportsTo(T.user(t.ownerId), u))) return true;
-    return T.chainMember(u, t);
+    return (reps || T.reportees(u)).has(t.ownerId);
   };
+  /* Can open the task: everything in scope, plus the other steps of a delegation chain they are part of. */
+  T.canView = (u, t) => T.inScope(u, t) || (!!u && !!t && T.chainMember(u, t));
   T.canManage = (u, t) => {
     if (!u || !t) return false;
     if (T.canSeeAll(u)) return true;
-    if (u.role === 'manager') return t.createdBy === u.id || T.managerTeams(u).includes(t.deptId) || T.reportsTo(T.user(t.ownerId), u);
+    if (u.role === 'manager') return t.createdBy === u.id || T.reportees(u).has(t.ownerId);
     return false;
   };
   T.canCreate = u => u && u.role !== 'employee';
@@ -147,14 +160,21 @@
     return out;
   };
   T.isOwner = (u, t) => u && t && t.ownerId === u.id;
-  T.visibleTasks = u => D().tasks.filter(t => T.canView(u, t));
+  T.visibleTasks = u => { const reps = T.reportees(u); return D().tasks.filter(t => T.inScope(u, t, reps)); };
+  /* People whose workload, KPIs and reminders you see: yourself and everyone below you in the reporting line. */
   T.visibleUsers = u => {
-    if (T.canSeeAll(u)) return D().users.filter(x => x.active);
-    if (u.role === 'manager') { const mine = T.managerTeams(u); return D().users.filter(x => x.active && (x.id === u.id || x.managerId === u.id || (x.role === 'employee' && T.userDepts(x).some(d => mine.includes(d))))); }
-    return [u];
+    if (T.seesAll(u)) return D().users.filter(x => x.active);
+    const reps = T.reportees(u);
+    return D().users.filter(x => x.active && (x.id === u.id || reps.has(x.id)));
   };
-  /* Super Admin / Department Head: anyone. Reporting Manager: themselves, employees in their departments and managers who report to them. */
-  T.assignableUsers = u => T.visibleUsers(u).filter(x => T.canSeeAll(u) || x.id === u.id || x.role === 'employee' || (x.role === 'manager' && x.managerId === u.id));
+  /* Super Admin / Department Head: anyone. Reporting Manager: themselves, everyone below them in the
+     reporting line, and employees in their departments (they then see those tasks as tasks they gave). */
+  T.assignableUsers = u => {
+    if (T.canSeeAll(u)) return D().users.filter(x => x.active);
+    if (u.role !== 'manager') return [u];
+    const reps = T.reportees(u), mine = T.managerTeams(u);
+    return D().users.filter(x => x.active && (x.id === u.id || reps.has(x.id) || (x.role === 'employee' && T.userDepts(x).some(d => mine.includes(d)))));
+  };
   T.visibleDepts = u => {
     if (T.canSeeAll(u)) return D().departments;
     if (u.role === 'manager') return D().departments.filter(d => T.managerTeams(u).includes(d.id));
